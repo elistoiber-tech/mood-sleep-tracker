@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="cycle check" />
+<title>cycle check</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; background: #0A0C10; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  // ---- localStorage-backed shim for window.storage (same interface the app already used in Claude) ----
+  // No personal data is stored in this file. Everything lives only in this browser's local storage,
+  // added either by using the app day-to-day, or via the "Restore from backup" paste box inside it.
+  window.storage = {
+    get: async (key) => {
+      const v = localStorage.getItem(key);
+      if (v === null) return null;
+      return { key, value: v, shared: false };
+    },
+    set: async (key, value) => {
+      localStorage.setItem(key, value);
+      return { key, value, shared: false };
+    },
+    delete: async (key) => {
+      localStorage.removeItem(key);
+      return { key, deleted: true, shared: false };
+    },
+    list: async (prefix) => {
+      const keys = Object.keys(localStorage).filter(k => !prefix || k.startsWith(prefix));
+      return { keys };
+    },
+  };
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback } = React;
+
+
+
+const MOOD_OPTIONS = [
+  { value: "green", emoji: "🟢", label: "Good" },
+  { value: "yellow", emoji: "🟡", label: "Meh" },
+  { value: "orange", emoji: "🟠", label: "Rough" },
+  { value: "red", emoji: "🔴", label: "Bad" },
+];
+
+const SLEEP_OPTIONS = [
+  { value: "solid", emoji: "😴", label: "Solid" },
+  { value: "ok", emoji: "😐", label: "Ok" },
+  { value: "woke-early", emoji: "👀", label: "Woke early" },
+  { value: "awful", emoji: "💀", label: "Awful" },
+];
+
+const BLEED_OPTIONS = [
+  { value: "none", emoji: "—", label: "None" },
+  { value: "spotting", emoji: "🩸", label: "Spotting" },
+  { value: "light", emoji: "🩸🩸", label: "Light" },
+  { value: "heavier", emoji: "🩸🩸🩸", label: "Heavier" },
+];
+
+const BODY_TAGS = [
+  { value: "bloated", emoji: "🫧", label: "Bloated" },
+  { value: "snacky", emoji: "🧁", label: "Snacky" },
+  { value: "lean", emoji: "🦴", label: "Lean" },
+  { value: "acne", emoji: "🔥", label: "Acne" },
+  { value: "boobs-tender", emoji: "🍈", label: "Boobs tender" },
+  { value: "high-energy", emoji: "⚡", label: "High energy" },
+  { value: "low-energy", emoji: "🔋", label: "Low energy" },
+  { value: "cramping", emoji: "🤏", label: "Cramping" },
+];
+
+function getToday() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+}
+
+function formatDate(dateStr) {
+  const d = new Date(dateStr + "T12:00:00");
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+
+function formatDateShort(dateStr) {
+  const d = new Date(dateStr + "T12:00:00");
+  return d.toLocaleDateString("en-US", { month: "numeric", day: "numeric" });
+}
+
+const moodColor = {
+  green: "#2D6A4F",
+  yellow: "#E9C46A",
+  orange: "#E76F51",
+  red: "#C1121F",
+};
+
+const STORAGE_KEY = "cycle-tracker-entries";
+
+function CycleTracker() {
+  const [entries, setEntries] = useState({});
+  const [currentDate, setCurrentDate] = useState(getToday());
+  const [view, setView] = useState("log"); // log | history | export
+  const [saved, setSaved] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importMessage, setImportMessage] = useState("");
+
+  // Load from persistent storage
+  useEffect(() => {
+    async function load() {
+      try {
+        const result = await window.storage.get(STORAGE_KEY);
+        if (result && result.value) {
+          setEntries(JSON.parse(result.value));
+        }
+      } catch (e) {
+        // No data yet, that's fine
+      }
+      setLoaded(true);
+    }
+    load();
+  }, []);
+
+  // Save to persistent storage
+  const saveEntries = useCallback(async (newEntries) => {
+    setEntries(newEntries);
+    try {
+      await window.storage.set(STORAGE_KEY, JSON.stringify(newEntries));
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      console.error("Save failed:", e);
+    }
+  }, []);
+
+  const current = entries[currentDate] || {
+    mood: null,
+    sleep: null,
+    sleepTime: "",
+    bleed: "none",
+    body: [],
+    context: "",
+  };
+
+  const updateField = (field, value) => {
+    const updated = {
+      ...entries,
+      [currentDate]: { ...current, [field]: value },
+    };
+    saveEntries(updated);
+  };
+
+  const toggleBody = (tag) => {
+    const body = current.body || [];
+    const updated = body.includes(tag)
+      ? body.filter(t => t !== tag)
+      : [...body, tag];
+    updateField("body", updated);
+  };
+
+  // Navigate dates
+  const shiftDate = (days) => {
+    const d = new Date(currentDate + "T12:00:00");
+    d.setDate(d.getDate() + days);
+    const newDate = d.toISOString().slice(0, 10);
+    if (newDate <= getToday()) setCurrentDate(newDate);
+  };
+
+  // Generate export text
+  const generateExport = () => {
+    const sorted = Object.keys(entries).sort();
+    if (sorted.length === 0) return "No entries yet!";
+    let text = "";
+    sorted.forEach(date => {
+      const e = entries[date];
+      const moodObj = MOOD_OPTIONS.find(m => m.value === e.mood);
+      const sleepObj = SLEEP_OPTIONS.find(s => s.value === e.sleep);
+      const bleedObj = BLEED_OPTIONS.find(b => b.value === e.bleed);
+      const bodyTags = (e.body || []).map(b => {
+        const tag = BODY_TAGS.find(t => t.value === b);
+        return tag ? tag.emoji + " " + tag.label.toLowerCase() : b;
+      });
+
+      text += `${formatDate(date)}\n`;
+      text += `mood: ${moodObj ? moodObj.emoji : "—"}\n`;
+      text += `sleep: ${sleepObj ? sleepObj.emoji + " " + sleepObj.label.toLowerCase() : "—"}${e.sleepTime ? " " + e.sleepTime : ""}\n`;
+      if (e.bleed && e.bleed !== "none") {
+        text += `bleed: ${bleedObj ? bleedObj.emoji + " " + bleedObj.label.toLowerCase() : e.bleed}\n`;
+      }
+      if (bodyTags.length > 0) {
+        text += `body: ${bodyTags.join(", ")}\n`;
+      }
+      if (e.context && e.context.trim()) {
+        text += `context: ${e.context.trim()}\n`;
+      }
+      text += "\n";
+    });
+    return text.trim();
+  };
+
+  const handleCopy = async () => {
+    const text = generateExport();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const parseImportText = (text) => {
+    const monthMap = { Jan:0, Feb:1, Mar:2, Apr:3, May:4, Jun:5, Jul:6, Aug:7, Sep:8, Oct:9, Nov:10, Dec:11 };
+    const blocks = text.split(/\n\s*\n/).map(b => b.trim()).filter(Boolean);
+    const result = { ...entries };
+    let count = 0;
+
+    blocks.forEach(block => {
+      const lines = block.split("\n").filter(l => l.trim().length > 0);
+      if (lines.length === 0) return;
+      const dateMatch = lines[0].match(/(\w+),\s*(\w+)\s+(\d+)/);
+      if (!dateMatch || !(dateMatch[2] in monthMap)) return;
+      const month = monthMap[dateMatch[2]];
+      const day = parseInt(dateMatch[3], 10);
+
+      const now = new Date();
+      let year = now.getFullYear();
+      if (new Date(year, month, day) > now) year -= 1;
+      const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+      const entry = { mood: null, sleep: null, sleepTime: "", bleed: "none", body: [], context: "" };
+      const contextLines = [];
+      let inContext = false;
+
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith("mood:")) {
+          inContext = false;
+          const val = line.slice(5).trim();
+          const m = MOOD_OPTIONS.find(o => val.startsWith(o.emoji));
+          entry.mood = m ? m.value : null;
+        } else if (line.startsWith("sleep:")) {
+          inContext = false;
+          const rest = line.slice(6).trim();
+          if (!rest || rest.startsWith("—")) {
+            entry.sleep = null;
+          } else {
+            const s = SLEEP_OPTIONS.find(o => rest.startsWith(o.emoji));
+            entry.sleep = s ? s.value : null;
+            if (s) {
+              let trailing = rest.slice(s.emoji.length).trim();
+              if (trailing.toLowerCase().startsWith(s.label.toLowerCase())) {
+                trailing = trailing.slice(s.label.length).trim();
+              }
+              if (trailing) entry.sleepTime = trailing;
+            }
+          }
+        } else if (line.startsWith("bleed:")) {
+          inContext = false;
+          const rest = line.slice(6).trim();
+          const b = BLEED_OPTIONS.find(o => o.value !== "none" && rest.startsWith(o.emoji));
+          entry.bleed = b ? b.value : "none";
+        } else if (line.startsWith("body:")) {
+          inContext = false;
+          const rest = line.slice(5).trim();
+          entry.body = rest.split(",").map(t => t.trim()).map(t => {
+            const found = BODY_TAGS.find(tag => t.startsWith(tag.emoji));
+            return found ? found.value : null;
+          }).filter(Boolean);
+        } else if (line.startsWith("context:")) {
+          inContext = true;
+          contextLines.push(line.slice(8).trim());
+        } else if (inContext) {
+          contextLines.push(line.trim());
+        }
+      }
+      entry.context = contextLines.join(" ").trim();
+      result[dateStr] = entry;
+      count++;
+    });
+
+    return { result, count };
+  };
+
+  const handleImport = () => {
+    if (!importText.trim()) {
+      setImportMessage("Paste your entries above first.");
+      return;
+    }
+    const { result, count } = parseImportText(importText);
+    if (count === 0) {
+      setImportMessage("Couldn't find any entries in that text — check the format and try again.");
+      return;
+    }
+    saveEntries(result);
+    setImportMessage(`Imported ${count} ${count === 1 ? "entry" : "entries"}.`);
+    setImportText("");
+  };
+
+  const sortedDates = Object.keys(entries).sort().reverse();
+  const entryCount = sortedDates.length;
+
+  const isToday = currentDate === getToday();
+
+  if (!loaded) {
+    return (
+      <div style={{
+        fontFamily: "'Newsreader', Georgia, serif",
+        background: "#0A0C10",
+        color: "#C9D1D9",
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}>
+        <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+        <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 14, color: "#484F58" }}>Loading…</p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      fontFamily: "'Newsreader', Georgia, serif",
+      background: "#0A0C10",
+      color: "#C9D1D9",
+      minHeight: "100vh",
+      padding: "0 0 80px",
+      maxWidth: 480,
+      margin: "0 auto",
+    }}>
+      <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+
+      <div style={{
+        padding: "20px 20px 16px",
+        borderBottom: "1px solid #161B22",
+        position: "sticky",
+        top: 0,
+        background: "#0A0C10",
+        zIndex: 10,
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h1 style={{
+            fontSize: 22,
+            fontWeight: 300,
+            color: "#E6EDF3",
+            margin: 0,
+            letterSpacing: "-0.03em",
+          }}>
+            cycle check
+          </h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {saved && (
+              <span style={{
+                fontFamily: "'DM Sans', sans-serif",
+                fontSize: 10,
+                color: "#2D6A4F",
+              }}>saved ✓</span>
+            )}
+            <span style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 11,
+              color: "#484F58",
+              padding: "3px 8px",
+              background: "#161B22",
+              borderRadius: 10,
+            }}>
+              {entryCount} {entryCount === 1 ? "entry" : "entries"}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 2, marginTop: 12 }}>
+          {[
+            { key: "log", label: "Log" },
+            { key: "history", label: "History" },
+            { key: "export", label: "Share" },
+          ].map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setView(tab.key)}
+              style={{
+                fontFamily: "'DM Sans', sans-serif",
+                fontSize: 12,
+                fontWeight: view === tab.key ? 600 : 400,
+                padding: "5px 14px",
+                borderRadius: 6,
+                border: "none",
+                cursor: "pointer",
+                background: view === tab.key ? "#161B22" : "transparent",
+                color: view === tab.key ? "#E6EDF3" : "#484F58",
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {view === "log" && (
+        <div style={{ padding: "16px 20px" }}>
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 24,
+          }}>
+            <button onClick={() => shiftDate(-1)} style={{
+              background: "#161B22",
+              border: "none",
+              color: "#8B949E",
+              fontSize: 18,
+              width: 40,
+              height: 40,
+              borderRadius: 8,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}>←</button>
+            <div style={{ textAlign: "center" }}>
+              <div style={{
+                fontFamily: "'Newsreader', Georgia, serif",
+                fontSize: 18,
+                color: "#E6EDF3",
+                fontWeight: 400,
+              }}>
+                {formatDate(currentDate)}
+              </div>
+              {isToday && (
+                <div style={{
+                  fontFamily: "'DM Sans', sans-serif",
+                  fontSize: 10,
+                  color: "#2D6A4F",
+                  marginTop: 2,
+                }}>today</div>
+              )}
+            </div>
+            <button
+              onClick={() => shiftDate(1)}
+              disabled={isToday}
+              style={{
+                background: "#161B22",
+                border: "none",
+                color: isToday ? "#21262D" : "#8B949E",
+                fontSize: 18,
+                width: 40,
+                height: 40,
+                borderRadius: 8,
+                cursor: isToday ? "default" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >→</button>
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 11,
+              color: "#8B949E",
+              marginBottom: 8,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}>
+              Mood
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+              {MOOD_OPTIONS.map(opt => {
+                const selected = current.mood === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => updateField("mood", opt.value)}
+                    style={{
+                      background: selected ? (moodColor[opt.value] || "#161B22") + "33" : "#161B22",
+                      border: selected ? `2px solid ${moodColor[opt.value]}` : "2px solid transparent",
+                      borderRadius: 10,
+                      padding: "12px 4px",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: 4,
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <span style={{ fontSize: 22 }}>{opt.emoji}</span>
+                    <span style={{
+                      fontFamily: "'DM Sans', sans-serif",
+                      fontSize: 10,
+                      color: selected ? "#E6EDF3" : "#484F58",
+                    }}>{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 11,
+              color: "#8B949E",
+              marginBottom: 8,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}>
+              Sleep
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+              {SLEEP_OPTIONS.map(opt => {
+                const selected = current.sleep === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => updateField("sleep", opt.value)}
+                    style={{
+                      background: selected ? "#A371F733" : "#161B22",
+                      border: selected ? "2px solid #A371F7" : "2px solid transparent",
+                      borderRadius: 10,
+                      padding: "12px 4px",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: 4,
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <span style={{ fontSize: 22 }}>{opt.emoji}</span>
+                    <span style={{
+                      fontFamily: "'DM Sans', sans-serif",
+                      fontSize: 10,
+                      color: selected ? "#E6EDF3" : "#484F58",
+                    }}>{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {(current.sleep === "woke-early" || current.sleep === "awful") && (
+              <input
+                type="text"
+                placeholder="What time? (e.g. 4:30am)"
+                value={current.sleepTime || ""}
+                onChange={e => updateField("sleepTime", e.target.value)}
+                style={{
+                  width: "100%",
+                  marginTop: 8,
+                  padding: "8px 12px",
+                  background: "#161B22",
+                  border: "1px solid #21262D",
+                  borderRadius: 8,
+                  color: "#E6EDF3",
+                  fontFamily: "'DM Sans', sans-serif",
+                  fontSize: 13,
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+            )}
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 11,
+              color: "#8B949E",
+              marginBottom: 8,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}>
+              Bleeding
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+              {BLEED_OPTIONS.map(opt => {
+                const selected = (current.bleed || "none") === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => updateField("bleed", opt.value)}
+                    style={{
+                      background: selected && opt.value !== "none" ? "#F4706733" : "#161B22",
+                      border: selected ? `2px solid ${opt.value === "none" ? "#21262D" : "#F47067"}` : "2px solid transparent",
+                      borderRadius: 10,
+                      padding: "12px 4px",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: 4,
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <span style={{ fontSize: opt.value === "none" ? 16 : 18 }}>{opt.emoji}</span>
+                    <span style={{
+                      fontFamily: "'DM Sans', sans-serif",
+                      fontSize: 10,
+                      color: selected ? "#E6EDF3" : "#484F58",
+                    }}>{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 11,
+              color: "#8B949E",
+              marginBottom: 8,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}>
+              Body <span style={{ textTransform: "none", fontWeight: 400, opacity: 0.6 }}>(tap all that apply)</span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {BODY_TAGS.map(tag => {
+                const selected = (current.body || []).includes(tag.value);
+                return (
+                  <button
+                    key={tag.value}
+                    onClick={() => toggleBody(tag.value)}
+                    style={{
+                      background: selected ? "#F4A26133" : "#161B22",
+                      border: selected ? "2px solid #F4A261" : "2px solid transparent",
+                      borderRadius: 20,
+                      padding: "8px 14px",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <span style={{ fontSize: 14 }}>{tag.emoji}</span>
+                    <span style={{
+                      fontFamily: "'DM Sans', sans-serif",
+                      fontSize: 11,
+                      color: selected ? "#E6EDF3" : "#484F58",
+                    }}>{tag.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 11,
+              color: "#8B949E",
+              marginBottom: 8,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}>
+              Context <span style={{ textTransform: "none", fontWeight: 400, opacity: 0.6 }}>(optional — only if something notable)</span>
+            </div>
+            <textarea
+              placeholder="e.g. tough convo with Dan, great date, travel day..."
+              value={current.context || ""}
+              onChange={e => updateField("context", e.target.value)}
+              rows={2}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                background: "#161B22",
+                border: "1px solid #21262D",
+                borderRadius: 10,
+                color: "#E6EDF3",
+                fontFamily: "'DM Sans', sans-serif",
+                fontSize: 13,
+                outline: "none",
+                resize: "none",
+                lineHeight: 1.5,
+                boxSizing: "border-box",
+              }}
+            />
+          </div>
+
+          {current.mood && (
+            <div style={{
+              background: "#161B22",
+              borderRadius: 10,
+              padding: "12px 16px",
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 12,
+              color: "#8B949E",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}>
+              <span style={{ color: "#2D6A4F", fontSize: 14 }}>✓</span>
+              <span>Logged for {formatDate(currentDate)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {view === "history" && (
+        <div style={{ padding: "16px 20px" }}>
+          {sortedDates.length === 0 ? (
+            <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13, color: "#484F58", textAlign: "center", marginTop: 40 }}>
+              No entries yet. Go log your first day!
+            </p>
+          ) : (
+            sortedDates.map(date => {
+              const e = entries[date];
+              const moodObj = MOOD_OPTIONS.find(m => m.value === e.mood);
+              const sleepObj = SLEEP_OPTIONS.find(s => s.value === e.sleep);
+              const bodyTags = (e.body || []).map(b => BODY_TAGS.find(t => t.value === b)).filter(Boolean);
+              const hasBleed = e.bleed && e.bleed !== "none";
+
+              return (
+                <div
+                  key={date}
+                  onClick={() => { setCurrentDate(date); setView("log"); }}
+                  style={{
+                    background: "#161B22",
+                    borderRadius: 10,
+                    padding: "12px 16px",
+                    marginBottom: 6,
+                    cursor: "pointer",
+                    borderLeft: `3px solid ${moodObj ? moodColor[moodObj.value] : "#21262D"}`,
+                    transition: "all 0.15s",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{
+                        fontFamily: "'DM Sans', sans-serif",
+                        fontSize: 12,
+                        color: "#8B949E",
+                        width: 50,
+                      }}>
+                        {formatDateShort(date)}
+                      </span>
+                      <span style={{ fontSize: 16 }}>{moodObj?.emoji || "—"}</span>
+                      <span style={{ fontSize: 14 }}>{sleepObj?.emoji || ""}</span>
+                      {hasBleed && <span style={{ fontSize: 12 }}>🩸</span>}
+                    </div>
+                    <div style={{ display: "flex", gap: 3, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {bodyTags.slice(0, 4).map(t => (
+                        <span key={t.value} style={{ fontSize: 10 }}>{t.emoji}</span>
+                      ))}
+                    </div>
+                  </div>
+                  {e.context && (
+                    <p style={{
+                      fontFamily: "'DM Sans', sans-serif",
+                      fontSize: 11,
+                      color: "#484F58",
+                      margin: "6px 0 0 60px",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}>
+                      {e.context}
+                    </p>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {view === "export" && (
+        <div style={{ padding: "16px 20px" }}>
+          <div style={{
+            background: "#161B22",
+            borderRadius: 10,
+            padding: 20,
+            marginBottom: 16,
+            border: "1px solid #21262D",
+          }}>
+            <h3 style={{
+              fontFamily: "'Newsreader', Georgia, serif",
+              fontSize: 17,
+              fontWeight: 400,
+              color: "#E6EDF3",
+              margin: "0 0 10px",
+            }}>
+              Share with Claude
+            </h3>
+            <p style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 12,
+              color: "#8B949E",
+              margin: "0 0 16px",
+              lineHeight: 1.6,
+            }}>
+              Copy your entries and paste them into a Claude chat. I'll update your cycle map and look for new patterns.
+            </p>
+            <button
+              onClick={handleCopy}
+              style={{
+                width: "100%",
+                padding: "14px",
+                background: copied ? "#2D6A4F" : "#161B22",
+                border: `2px solid ${copied ? "#2D6A4F" : "#30363D"}`,
+                borderRadius: 10,
+                color: "#E6EDF3",
+                fontFamily: "'DM Sans', sans-serif",
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.2s",
+              }}
+            >
+              {copied ? "✓ Copied to clipboard!" : "Copy all entries"}
+            </button>
+          </div>
+
+          <div style={{
+            background: "#161B22",
+            borderRadius: 10,
+            padding: 16,
+            border: "1px solid #21262D",
+          }}>
+            <div style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 11,
+              color: "#484F58",
+              marginBottom: 8,
+            }}>Preview</div>
+            <pre style={{
+              fontFamily: "monospace",
+              fontSize: 11,
+              color: "#7EE787",
+              background: "#0A0C10",
+              borderRadius: 8,
+              padding: 12,
+              overflow: "auto",
+              maxHeight: 400,
+              whiteSpace: "pre-wrap",
+              lineHeight: 1.6,
+              margin: 0,
+            }}>
+              {generateExport()}
+            </pre>
+          </div>
+
+          <div style={{
+            background: "#161B22",
+            borderRadius: 10,
+            padding: 20,
+            marginTop: 16,
+            border: "1px solid #21262D",
+          }}>
+            <h3 style={{
+              fontFamily: "'Newsreader', Georgia, serif",
+              fontSize: 17,
+              fontWeight: 400,
+              color: "#E6EDF3",
+              margin: "0 0 10px",
+            }}>
+              Restore from backup
+            </h3>
+            <p style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 12,
+              color: "#8B949E",
+              margin: "0 0 12px",
+              lineHeight: 1.6,
+            }}>
+              Paste a previously exported entries text below to bring your history back. This only saves to this device.
+            </p>
+            <textarea
+              placeholder="Paste your exported entries here..."
+              value={importText}
+              onChange={e => { setImportText(e.target.value); setImportMessage(""); }}
+              rows={5}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                background: "#0A0C10",
+                border: "1px solid #21262D",
+                borderRadius: 10,
+                color: "#E6EDF3",
+                fontFamily: "monospace",
+                fontSize: 11,
+                outline: "none",
+                resize: "vertical",
+                lineHeight: 1.5,
+                boxSizing: "border-box",
+                marginBottom: 10,
+              }}
+            />
+            <button
+              onClick={handleImport}
+              style={{
+                width: "100%",
+                padding: "12px",
+                background: "#161B22",
+                border: "2px solid #30363D",
+                borderRadius: 10,
+                color: "#E6EDF3",
+                fontFamily: "'DM Sans', sans-serif",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              Import entries
+            </button>
+            {importMessage && (
+              <p style={{
+                fontFamily: "'DM Sans', sans-serif",
+                fontSize: 11,
+                color: importMessage.startsWith("Imported") ? "#2D6A4F" : "#F47067",
+                marginTop: 8,
+                marginBottom: 0,
+              }}>{importMessage}</p>
+            )}
+          </div>
+
+          <div style={{ marginTop: 24, textAlign: "center" }}>
+            <button
+              onClick={async () => {
+                if (confirm("Clear all entries? This can't be undone.")) {
+                  setEntries({});
+                  try {
+                    await window.storage.delete(STORAGE_KEY);
+                  } catch (e) {}
+                }
+              }}
+              style={{
+                background: "none",
+                border: "none",
+                fontFamily: "'DM Sans', sans-serif",
+                fontSize: 11,
+                color: "#484F58",
+                cursor: "pointer",
+                textDecoration: "underline",
+              }}
+            >
+              Reset all data
+            </button>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        input::placeholder, textarea::placeholder {
+          color: #30363D;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<CycleTracker />);
+</script>
+
+</body>
+</html>
