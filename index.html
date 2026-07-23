@@ -82,7 +82,10 @@ const BODY_TAGS = [
 
 function getToday() {
   const d = new Date();
-  return d.toISOString().slice(0, 10);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function formatDate(dateStr) {
@@ -171,7 +174,10 @@ function CycleTracker() {
   const shiftDate = (days) => {
     const d = new Date(currentDate + "T12:00:00");
     d.setDate(d.getDate() + days);
-    const newDate = d.toISOString().slice(0, 10);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const newDate = `${year}-${month}-${day}`;
     if (newDate <= getToday()) setCurrentDate(newDate);
   };
 
