@@ -69,6 +69,14 @@ const BLEED_OPTIONS = [
   { value: "heavier", emoji: "🩸🩸🩸", label: "Heavier" },
 ];
 
+const MUCUS_OPTIONS = [
+  { value: "dry", emoji: "🏜️", label: "Dry" },
+  { value: "sticky", emoji: "🩹", label: "Sticky" },
+  { value: "creamy", emoji: "🥛", label: "Creamy" },
+  { value: "watery", emoji: "💧", label: "Watery" },
+  { value: "eggwhite", emoji: "🥚", label: "Egg-white" },
+];
+
 const BODY_TAGS = [
   { value: "bloated", emoji: "🫧", label: "Bloated" },
   { value: "snacky", emoji: "🧁", label: "Snacky" },
@@ -106,16 +114,21 @@ const moodColor = {
 };
 
 const STORAGE_KEY = "cycle-tracker-entries";
+const MEDS_KEY = "cycle-tracker-meds";
 
 function CycleTracker() {
   const [entries, setEntries] = useState({});
+  const [meds, setMeds] = useState([]);
   const [currentDate, setCurrentDate] = useState(getToday());
-  const [view, setView] = useState("log"); // log | history | export
+  const [view, setView] = useState("log"); // log | history | meds | export
   const [saved, setSaved] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedJSON, setCopiedJSON] = useState(false);
   const [importText, setImportText] = useState("");
   const [importMessage, setImportMessage] = useState("");
+  const [medDate, setMedDate] = useState(getToday());
+  const [medNote, setMedNote] = useState("");
 
   // Load from persistent storage
   useEffect(() => {
@@ -127,6 +140,14 @@ function CycleTracker() {
         }
       } catch (e) {
         // No data yet, that's fine
+      }
+      try {
+        const medResult = await window.storage.get(MEDS_KEY);
+        if (medResult && medResult.value) {
+          setMeds(JSON.parse(medResult.value));
+        }
+      } catch (e) {
+        // No meds yet, that's fine
       }
       setLoaded(true);
     }
@@ -145,11 +166,42 @@ function CycleTracker() {
     }
   }, []);
 
+  // Save meds to persistent storage
+  const saveMeds = useCallback(async (newMeds) => {
+    setMeds(newMeds);
+    try {
+      await window.storage.set(MEDS_KEY, JSON.stringify(newMeds));
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      console.error("Save failed:", e);
+    }
+  }, []);
+
+  const addMed = () => {
+    if (!medNote.trim()) return;
+    const entry = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+      date: medDate,
+      note: medNote.trim(),
+    };
+    saveMeds([...meds, entry]);
+    setMedNote("");
+    setMedDate(getToday());
+  };
+
+  const removeMed = (id) => {
+    if (confirm("Remove this medicine entry?")) {
+      saveMeds(meds.filter(m => m.id !== id));
+    }
+  };
+
   const current = entries[currentDate] || {
     mood: null,
     sleep: null,
     sleepTime: "",
     bleed: "none",
+    mucus: null,
     body: [],
     context: "",
   };
@@ -202,6 +254,10 @@ function CycleTracker() {
       if (e.bleed && e.bleed !== "none") {
         text += `bleed: ${bleedObj ? bleedObj.emoji + " " + bleedObj.label.toLowerCase() : e.bleed}\n`;
       }
+      if (e.mucus) {
+        const mObj = MUCUS_OPTIONS.find(m => m.value === e.mucus);
+        text += `mucus: ${mObj ? mObj.emoji + " " + mObj.label.toLowerCase() : e.mucus}\n`;
+      }
       if (bodyTags.length > 0) {
         text += `body: ${bodyTags.join(", ")}\n`;
       }
@@ -210,7 +266,58 @@ function CycleTracker() {
       }
       text += "\n";
     });
+    if (meds && meds.length > 0) {
+      text += "\n--- medicine changes ---\n";
+      [...meds].sort((a, b) => a.date.localeCompare(b.date)).forEach(m => {
+        text += `${formatDate(m.date)}: ${m.note}\n`;
+      });
+    }
     return text.trim();
+  };
+
+  // Full JSON export: lossless, includes daily entries + meds log
+  const generateJSON = () => {
+    return JSON.stringify({
+      app: "cycle-check",
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      entries,
+      meds,
+    }, null, 2);
+  };
+
+  const handleDownloadJSON = () => {
+    try {
+      const blob = new Blob([generateJSON()], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `cycle-check-backup-${getToday()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      console.error("Download failed:", e);
+    }
+  };
+
+  const handleCopyJSON = async () => {
+    const text = generateJSON();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedJSON(true);
+      setTimeout(() => setCopiedJSON(false), 2000);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      setCopiedJSON(true);
+      setTimeout(() => setCopiedJSON(false), 2000);
+    }
   };
 
   const handleCopy = async () => {
@@ -250,7 +357,7 @@ function CycleTracker() {
       if (new Date(year, month, day) > now) year -= 1;
       const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 
-      const entry = { mood: null, sleep: null, sleepTime: "", bleed: "none", body: [], context: "" };
+      const entry = { mood: null, sleep: null, sleepTime: "", bleed: "none", mucus: null, body: [], context: "" };
       const contextLines = [];
       let inContext = false;
 
@@ -282,6 +389,11 @@ function CycleTracker() {
           const rest = line.slice(6).trim();
           const b = BLEED_OPTIONS.find(o => o.value !== "none" && rest.startsWith(o.emoji));
           entry.bleed = b ? b.value : "none";
+        } else if (line.startsWith("mucus:")) {
+          inContext = false;
+          const rest = line.slice(6).trim();
+          const m = MUCUS_OPTIONS.find(o => rest.startsWith(o.emoji));
+          entry.mucus = m ? m.value : null;
         } else if (line.startsWith("body:")) {
           inContext = false;
           const rest = line.slice(5).trim();
@@ -304,19 +416,72 @@ function CycleTracker() {
     return { result, count };
   };
 
+  // Accepts JSON (preferred, lossless) or the older readable text. Merges into current data.
+  const applyImport = (text) => {
+    const trimmed = (text || "").trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        const data = JSON.parse(trimmed);
+        const newEntries = data.entries && typeof data.entries === "object"
+          ? { ...entries, ...data.entries }
+          : entries;
+        let medCount = 0;
+        if (Array.isArray(data.meds)) {
+          const existingIds = new Set(meds.map(m => m.id));
+          const toAdd = data.meds.filter(m => m && m.id && !existingIds.has(m.id));
+          if (toAdd.length > 0) {
+            saveMeds([...meds, ...toAdd]);
+            medCount = toAdd.length;
+          }
+        }
+        const entryCount = data.entries ? Object.keys(data.entries).length : 0;
+        if (entryCount > 0) saveEntries(newEntries);
+        return { count: entryCount, medCount };
+      } catch (e) {
+        // not valid JSON — fall through to text parser
+      }
+    }
+    const { result, count } = parseImportText(trimmed);
+    if (count > 0) saveEntries(result);
+    return { count, medCount: 0 };
+  };
+
+  const importResultMessage = (count, medCount) => {
+    const parts = [];
+    parts.push(`${count} ${count === 1 ? "entry" : "entries"}`);
+    if (medCount) parts.push(`${medCount} med ${medCount === 1 ? "change" : "changes"}`);
+    return `Imported ${parts.join(" and ")}.`;
+  };
+
   const handleImport = () => {
     if (!importText.trim()) {
-      setImportMessage("Paste your entries above first.");
+      setImportMessage("Paste your backup above first.");
       return;
     }
-    const { result, count } = parseImportText(importText);
-    if (count === 0) {
-      setImportMessage("Couldn't find any entries in that text — check the format and try again.");
+    const { count, medCount } = applyImport(importText);
+    if (count === 0 && medCount === 0) {
+      setImportMessage("Couldn't find anything to import — check the format and try again.");
       return;
     }
-    saveEntries(result);
-    setImportMessage(`Imported ${count} ${count === 1 ? "entry" : "entries"}.`);
+    setImportMessage(importResultMessage(count, medCount));
     setImportText("");
+  };
+
+  const handleImportFile = (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const { count, medCount } = applyImport(String(reader.result));
+      if (count === 0 && medCount === 0) {
+        setImportMessage("Couldn't read that file — is it a cycle check backup?");
+      } else {
+        setImportMessage(importResultMessage(count, medCount));
+      }
+    };
+    reader.onerror = () => setImportMessage("Couldn't read that file.");
+    reader.readAsText(file);
+    ev.target.value = "";
   };
 
   const sortedDates = Object.keys(entries).sort().reverse();
@@ -396,6 +561,7 @@ function CycleTracker() {
           {[
             { key: "log", label: "Log" },
             { key: "history", label: "History" },
+            { key: "meds", label: "Meds" },
             { key: "export", label: "Share" },
           ].map(tab => (
             <button
@@ -603,8 +769,8 @@ function CycleTracker() {
                     key={opt.value}
                     onClick={() => updateField("bleed", opt.value)}
                     style={{
-                      background: selected && opt.value !== "none" ? "#F4706733" : "#161B22",
-                      border: selected ? `2px solid ${opt.value === "none" ? "#21262D" : "#F47067"}` : "2px solid transparent",
+                      background: selected ? (opt.value === "none" ? "#30363D" : "#F4706733") : "#161B22",
+                      border: selected ? `2px solid ${opt.value === "none" ? "#8B949E" : "#F47067"}` : "2px solid transparent",
                       borderRadius: 10,
                       padding: "12px 4px",
                       cursor: "pointer",
@@ -619,6 +785,51 @@ function CycleTracker() {
                     <span style={{
                       fontFamily: "'DM Sans', sans-serif",
                       fontSize: 10,
+                      color: selected ? "#E6EDF3" : "#484F58",
+                    }}>{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 11,
+              color: "#8B949E",
+              marginBottom: 8,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}>
+              Cervical mucus <span style={{ textTransform: "none", fontWeight: 400, opacity: 0.6 }}>(tap one, tap again to clear)</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+              {MUCUS_OPTIONS.map(opt => {
+                const selected = current.mucus === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => updateField("mucus", selected ? null : opt.value)}
+                    style={{
+                      background: selected ? "#6CB6FF33" : "#161B22",
+                      border: selected ? "2px solid #6CB6FF" : "2px solid transparent",
+                      borderRadius: 10,
+                      padding: "12px 2px",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: 4,
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <span style={{ fontSize: 20 }}>{opt.emoji}</span>
+                    <span style={{
+                      fontFamily: "'DM Sans', sans-serif",
+                      fontSize: 9,
+                      lineHeight: 1.1,
+                      textAlign: "center",
                       color: selected ? "#E6EDF3" : "#484F58",
                     }}>{opt.label}</span>
                   </button>
@@ -762,6 +973,7 @@ function CycleTracker() {
                       <span style={{ fontSize: 16 }}>{moodObj?.emoji || "—"}</span>
                       <span style={{ fontSize: 14 }}>{sleepObj?.emoji || ""}</span>
                       {hasBleed && <span style={{ fontSize: 12 }}>🩸</span>}
+                      {e.mucus && <span style={{ fontSize: 12 }}>{(MUCUS_OPTIONS.find(m => m.value === e.mucus) || {}).emoji}</span>}
                     </div>
                     <div style={{ display: "flex", gap: 3, flexWrap: "wrap", justifyContent: "flex-end" }}>
                       {bodyTags.slice(0, 4).map(t => (
@@ -789,6 +1001,91 @@ function CycleTracker() {
         </div>
       )}
 
+      {view === "meds" && (
+        <div style={{ padding: "16px 20px" }}>
+          <div style={{
+            background: "#161B22",
+            borderRadius: 10,
+            padding: 16,
+            marginBottom: 16,
+            border: "1px solid #21262D",
+          }}>
+            <h3 style={{
+              fontFamily: "'Newsreader', Georgia, serif",
+              fontSize: 17, fontWeight: 400, color: "#E6EDF3", margin: "0 0 4px",
+            }}>Log a medicine change</h3>
+            <p style={{
+              fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: "#8B949E",
+              margin: "0 0 12px", lineHeight: 1.5,
+            }}>Only when something changes: a new med, a stopped med, or a dose change.</p>
+            <input
+              type="date"
+              value={medDate}
+              max={getToday()}
+              onChange={e => setMedDate(e.target.value)}
+              style={{
+                width: "100%", padding: "10px 12px", background: "#0A0C10",
+                border: "1px solid #21262D", borderRadius: 8, color: "#E6EDF3",
+                fontFamily: "'DM Sans', sans-serif", fontSize: 13, outline: "none",
+                boxSizing: "border-box", marginBottom: 8,
+              }}
+            />
+            <input
+              type="text"
+              placeholder="e.g. Wellbutrin 150mg → 300mg"
+              value={medNote}
+              onChange={e => setMedNote(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") addMed(); }}
+              style={{
+                width: "100%", padding: "10px 12px", background: "#0A0C10",
+                border: "1px solid #21262D", borderRadius: 8, color: "#E6EDF3",
+                fontFamily: "'DM Sans', sans-serif", fontSize: 13, outline: "none",
+                boxSizing: "border-box", marginBottom: 10,
+              }}
+            />
+            <button
+              onClick={addMed}
+              style={{
+                width: "100%", padding: "12px", background: "#161B22",
+                border: "2px solid #30363D", borderRadius: 10, color: "#E6EDF3",
+                fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 600, cursor: "pointer",
+              }}
+            >Add entry</button>
+          </div>
+
+          {meds.length === 0 ? (
+            <p style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13, color: "#484F58", textAlign: "center", marginTop: 24 }}>
+              No medicine changes logged yet.
+            </p>
+          ) : (
+            [...meds].sort((a, b) => b.date.localeCompare(a.date)).map(m => (
+              <div key={m.id} style={{
+                background: "#161B22", borderRadius: 10, padding: "12px 16px", marginBottom: 6,
+                borderLeft: "3px solid #A371F7", display: "flex",
+                justifyContent: "space-between", alignItems: "center", gap: 10,
+              }}>
+                <div>
+                  <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11, color: "#8B949E", marginBottom: 2 }}>
+                    {formatDate(m.date)}
+                  </div>
+                  <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13, color: "#E6EDF3" }}>
+                    {m.note}
+                  </div>
+                </div>
+                <button
+                  onClick={() => removeMed(m.id)}
+                  style={{
+                    background: "none", border: "none", color: "#484F58", fontSize: 18,
+                    cursor: "pointer", padding: "0 4px", flexShrink: 0, lineHeight: 1,
+                  }}
+                  aria-label="Remove"
+                >×</button>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
       {view === "export" && (
         <div style={{ padding: "16px 20px" }}>
           <div style={{
@@ -805,7 +1102,7 @@ function CycleTracker() {
               color: "#E6EDF3",
               margin: "0 0 10px",
             }}>
-              Share with Claude
+              Back up &amp; share
             </h3>
             <p style={{
               fontFamily: "'DM Sans', sans-serif",
@@ -814,25 +1111,61 @@ function CycleTracker() {
               margin: "0 0 16px",
               lineHeight: 1.6,
             }}>
-              Copy your entries and paste them into a Claude chat. I'll update your cycle map and look for new patterns.
+              JSON keeps every field exactly, and it's the format Claude reads cleanly. Download a file to save it, or copy it to paste into a chat. Both include your meds log.
             </p>
             <button
-              onClick={handleCopy}
+              onClick={handleDownloadJSON}
               style={{
                 width: "100%",
                 padding: "14px",
-                background: copied ? "#2D6A4F" : "#161B22",
-                border: `2px solid ${copied ? "#2D6A4F" : "#30363D"}`,
+                background: "#1F6FEB22",
+                border: "2px solid #388BFD",
                 borderRadius: 10,
                 color: "#E6EDF3",
                 fontFamily: "'DM Sans', sans-serif",
                 fontSize: 14,
                 fontWeight: 600,
                 cursor: "pointer",
+                marginBottom: 8,
                 transition: "all 0.2s",
               }}
             >
-              {copied ? "✓ Copied to clipboard!" : "Copy all entries"}
+              ⬇ Download backup (.json)
+            </button>
+            <button
+              onClick={handleCopyJSON}
+              style={{
+                width: "100%",
+                padding: "12px",
+                background: copiedJSON ? "#2D6A4F" : "#161B22",
+                border: `2px solid ${copiedJSON ? "#2D6A4F" : "#30363D"}`,
+                borderRadius: 10,
+                color: "#E6EDF3",
+                fontFamily: "'DM Sans', sans-serif",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+                marginBottom: 8,
+                transition: "all 0.2s",
+              }}
+            >
+              {copiedJSON ? "✓ Copied JSON!" : "Copy JSON to clipboard"}
+            </button>
+            <button
+              onClick={handleCopy}
+              style={{
+                width: "100%",
+                padding: "10px",
+                background: "none",
+                border: "none",
+                color: "#484F58",
+                fontFamily: "'DM Sans', sans-serif",
+                fontSize: 12,
+                cursor: "pointer",
+                textDecoration: "underline",
+              }}
+            >
+              {copied ? "✓ Copied readable text" : "Copy readable text instead"}
             </button>
           </div>
 
@@ -888,10 +1221,22 @@ function CycleTracker() {
               margin: "0 0 12px",
               lineHeight: 1.6,
             }}>
-              Paste a previously exported entries text below to bring your history back. This only saves to this device.
+              Choose a .json backup file, or paste JSON (or older text) below. New data merges into what's here. This only saves to this device.
             </p>
+            <input
+              type="file"
+              accept="application/json,.json,.txt,text/plain"
+              onChange={handleImportFile}
+              style={{
+                width: "100%",
+                fontFamily: "'DM Sans', sans-serif",
+                fontSize: 12,
+                color: "#8B949E",
+                marginBottom: 12,
+              }}
+            />
             <textarea
-              placeholder="Paste your exported entries here..."
+              placeholder="…or paste your backup (JSON or text) here"
               value={importText}
               onChange={e => { setImportText(e.target.value); setImportMessage(""); }}
               rows={5}
@@ -942,10 +1287,12 @@ function CycleTracker() {
           <div style={{ marginTop: 24, textAlign: "center" }}>
             <button
               onClick={async () => {
-                if (confirm("Clear all entries? This can't be undone.")) {
+                if (confirm("Clear all entries and meds? This can't be undone.")) {
                   setEntries({});
+                  setMeds([]);
                   try {
                     await window.storage.delete(STORAGE_KEY);
+                    await window.storage.delete(MEDS_KEY);
                   } catch (e) {}
                 }
               }}
