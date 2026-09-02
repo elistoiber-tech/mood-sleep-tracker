@@ -116,6 +116,255 @@ const moodColor = {
 const STORAGE_KEY = "cycle-tracker-entries";
 const MEDS_KEY = "cycle-tracker-meds";
 
+function Dashboard({ entries, meds }) {
+  const [sel, setSel] = useState(null);
+
+  const MOODC = { green: "#2E9E6A", yellow: "#E9C46A", orange: "#E76F51", red: "#C1121F" };
+  const MOODL = { green: "Good", yellow: "Meh", orange: "Rough", red: "Bad" };
+  const SLEEPL = { solid: "Solid", ok: "Ok", "woke-early": "Woke early", awful: "Awful" };
+  const BLEEDL = { spotting: "spotting", light: "light", heavier: "heavier" };
+  const BLEEDI = { spotting: 1, light: 2, heavier: 3 };
+  const MUCUSV = {
+    dry: { dot: null, label: "Dry" },
+    sticky: { dot: "#4E6E8E", label: "Sticky" },
+    creamy: { dot: "#5A93C9", label: "Creamy" },
+    watery: { dot: "#6CB6FF", label: "Watery" },
+    eggwhite: { dot: "#CDEBFF", ring: true, label: "Egg-white" },
+  };
+  const BODYL = {};
+  BODY_TAGS.forEach(t => { BODYL[t.value] = t.emoji + " " + t.label; });
+
+  const medList = meds || [];
+  const medDates = new Set(medList.map(m => m.date));
+  const keys = Object.keys(entries).sort();
+
+  const parseD = (s) => new Date(s + "T12:00:00");
+  const dbetween = (a, b) => Math.round((parseD(b) - parseD(a)) / 86400000);
+  const fmtS = (s) => parseD(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const fmtL = (s) => parseD(s).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  const dstr = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+
+  if (keys.length === 0) {
+    return (
+      <div style={{ padding: "48px 24px", textAlign: "center", fontFamily: "'DM Sans', sans-serif", fontSize: 13, color: "#484F58", lineHeight: 1.6 }}>
+        Log a few days first, then your dashboard fills in here — a calendar, your bleeding rhythm, and medicine markers.
+      </div>
+    );
+  }
+
+  const total = keys.length;
+  const span = dbetween(keys[0], keys[keys.length - 1]) + 1;
+  const bleedDays = keys.filter(k => entries[k].bleed && entries[k].bleed !== "none").length;
+
+  // months
+  const first = parseD(keys[0]), last = parseD(keys[keys.length - 1]);
+  const months = [];
+  let yy = first.getFullYear(), mm = first.getMonth();
+  const eY = last.getFullYear(), eM = last.getMonth();
+  while (yy < eY || (yy === eY && mm <= eM)) { months.push([yy, mm]); mm++; if (mm > 11) { mm = 0; yy++; } }
+
+  // bleed episodes
+  const bleedDatesArr = keys.filter(k => entries[k].bleed && entries[k].bleed !== "none");
+  const episodes = [];
+  let cur = null;
+  bleedDatesArr.forEach(d => {
+    if (cur && dbetween(cur.end, d) <= 2) { cur.end = d; cur.days.push(d); cur.maxI = Math.max(cur.maxI, BLEEDI[entries[d].bleed] || 1); }
+    else { cur = { start: d, end: d, days: [d], maxI: BLEEDI[entries[d].bleed] || 1 }; episodes.push(cur); }
+  });
+  const tenderBefore = (start) => {
+    for (let b = 1; b <= 5; b++) { const ds = dstr(new Date(parseD(start).getTime() - b * 86400000)); if (entries[ds] && (entries[ds].body || []).includes("boobs-tender")) return true; }
+    return false;
+  };
+  const preTally = {}; let tenderCount = 0;
+  episodes.forEach(ep => {
+    const seen = new Set();
+    for (let b = 1; b <= 5; b++) { const ds = dstr(new Date(parseD(ep.start).getTime() - b * 86400000)); if (entries[ds]) (entries[ds].body || []).forEach(t => seen.add(t)); }
+    if (seen.has("boobs-tender")) tenderCount++;
+    seen.forEach(t => preTally[t] = (preTally[t] || 0) + 1);
+  });
+  const preTop = Object.entries(preTally).sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+  const dow = ["S", "M", "T", "W", "T", "F", "S"];
+  const selE = sel ? entries[sel] : null;
+
+  return (
+    <div className="dash">
+      <style>{`
+        .dash { padding: 16px 20px; }
+        .dash .d-sec { margin-bottom: 26px; }
+        .dash .d-lbl { font-family: 'DM Sans', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #8B949E; margin: 0 0 3px; }
+        .dash .d-note { font-family: 'DM Sans', sans-serif; font-size: 12px; color: #565E68; margin: 0 0 14px; line-height: 1.5; }
+        .dash .d-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 26px; }
+        .dash .d-stat { background: #12161C; border: 1px solid #21262D; border-radius: 12px; padding: 12px 8px; text-align: center; }
+        .dash .d-stat .n { font-family: 'Newsreader', serif; font-size: 22px; color: #E6EDF3; line-height: 1; }
+        .dash .d-stat .l { font-family: 'DM Sans', sans-serif; font-size: 10px; color: #565E68; margin-top: 5px; }
+        .dash .dmonths { display: flex; flex-direction: column; gap: 18px; }
+        .dash .dmonth { font-family: 'Newsreader', serif; font-size: 16px; color: #E6EDF3; margin: 0 0 8px; }
+        .dash .ddow { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; }
+        .dash .ddow span { text-align: center; font-family: 'DM Sans', sans-serif; font-size: 9px; color: #565E68; font-weight: 600; }
+        .dash .dgrid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+        .dash .dcell { aspect-ratio: 1 / 1; border-radius: 7px; position: relative; display: flex; align-items: flex-start; justify-content: flex-end; padding: 3px 4px 0 0; font-family: 'DM Sans', sans-serif; font-size: 8.5px; color: #565E68; border: 1px solid transparent; }
+        .dash .dcell.logged { color: rgba(255,255,255,0.55); cursor: pointer; border-color: #21262D; }
+        .dash .dcell.sel { outline: 2px solid #6CB6FF; }
+        .dash .dmarks { position: absolute; left: 4px; bottom: 3px; right: 4px; display: flex; align-items: center; gap: 3px; height: 6px; }
+        .dash .dbleed { flex: 1; height: 3px; border-radius: 2px; background: #F47067; }
+        .dash .ddot { width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto; }
+        .dash .dmed { position: absolute; top: 3px; left: 4px; width: 6px; height: 6px; border-radius: 2px; background: #A371F7; }
+        .dash .dlegend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 14px; }
+        .dash .dlg { display: flex; align-items: center; gap: 6px; font-family: 'DM Sans', sans-serif; font-size: 11px; color: #8B949E; }
+        .dash .dsw { width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto; }
+        .dash .dmkey { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; padding-top: 12px; border-top: 1px dashed #21262D; }
+        .dash .dmk-title { font-family: 'DM Sans', sans-serif; font-size: 11px; color: #565E68; font-weight: 600; }
+        .dash .dmk-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+        .dash .ddetail { margin-top: 14px; background: #161B22; border: 1px solid #21262D; border-radius: 12px; padding: 14px; font-family: 'DM Sans', sans-serif; font-size: 12.5px; color: #8B949E; line-height: 1.6; }
+        .dash .ddetail.muted { color: #565E68; }
+        .dash .ddetail .dd-date { font-family: 'Newsreader', serif; font-size: 15px; color: #E6EDF3; margin-bottom: 6px; }
+        .dash .ddetail .dd-ctx { color: #E6EDF3; margin-top: 8px; font-style: italic; }
+        .dash .depi { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: #12161C; border: 1px solid #21262D; border-radius: 12px; border-left: 3px solid #F47067; }
+        .dash .depi-date { font-family: 'Newsreader', serif; font-size: 15px; color: #E6EDF3; flex: 0 0 auto; width: 84px; }
+        .dash .depi-meta { font-family: 'DM Sans', sans-serif; font-size: 11.5px; color: #8B949E; line-height: 1.4; }
+        .dash .depi-meta b { color: #E6EDF3; font-weight: 600; }
+        .dash .dgap { text-align: center; font-family: 'DM Sans', sans-serif; font-size: 10.5px; color: #565E68; padding: 5px 0; }
+        .dash .dtender { display: inline-block; font-family: 'DM Sans', sans-serif; font-size: 10px; color: #F4A261; background: #3a2c17; border: 1px solid #5a441f; border-radius: 999px; padding: 1px 7px; margin-top: 4px; }
+        .dash .dinsight { font-family: 'DM Sans', sans-serif; font-size: 12.5px; color: #E6EDF3; line-height: 1.6; margin: 0; background: #12161C; border: 1px solid #21262D; border-radius: 14px; padding: 16px; }
+        .dash .dinsight b { color: #6CB6FF; font-weight: 600; }
+        .dash .dmedrow { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; background: #12161C; border: 1px solid #21262D; border-radius: 12px; border-left: 3px solid #A371F7; margin-bottom: 8px; }
+        .dash .dmed-date { font-family: 'Newsreader', serif; font-size: 14px; color: #E6EDF3; flex: 0 0 auto; width: 84px; }
+        .dash .dmed-note { font-family: 'DM Sans', sans-serif; font-size: 12.5px; color: #8B949E; line-height: 1.45; }
+        .dash .depi-wrap { display: flex; flex-direction: column; gap: 8px; }
+      `}</style>
+
+      <div className="d-stats">
+        {[[total, "days logged"], [span, "day span"], [bleedDays, "bleed days"]].map(([n, l]) => (
+          <div className="d-stat" key={l}><div className="n">{n}</div><div className="l">{l}</div></div>
+        ))}
+      </div>
+
+      <div className="d-sec">
+        <p className="d-lbl">Calendar</p>
+        <p className="d-note">Each day is tinted by mood. Red bar = bleeding, blue dot = mucus, purple square = medicine change.</p>
+        <div className="dmonths">
+          {months.map(([y, m]) => {
+            const monthName = new Date(y, m, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+            const firstDow = new Date(y, m, 1).getDay();
+            const dim = new Date(y, m + 1, 0).getDate();
+            const cells = [];
+            for (let i = 0; i < firstDow; i++) cells.push(<div key={"b" + i} className="dcell"></div>);
+            for (let d = 1; d <= dim; d++) {
+              const ds = `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+              const e = entries[ds];
+              if (!e) { cells.push(<div key={ds} className="dcell">{d}</div>); continue; }
+              const mc = e.mood && MOODC[e.mood] ? MOODC[e.mood] : "#2b323b";
+              const bg = e.mood ? mc + "44" : "#1b212a";
+              const bord = e.mood ? mc + "88" : "#2b323b";
+              const hasBleed = e.bleed && e.bleed !== "none";
+              const mv = e.mucus && MUCUSV[e.mucus] ? MUCUSV[e.mucus] : null;
+              const hasDot = mv && mv.dot;
+              cells.push(
+                <div key={ds} className={"dcell logged" + (sel === ds ? " sel" : "")} style={{ background: bg, borderColor: bord }} onClick={() => setSel(ds)}>
+                  {medDates.has(ds) && <div className="dmed"></div>}
+                  {d}
+                  {(hasBleed || hasDot) && (
+                    <div className="dmarks">
+                      {hasBleed ? <div className="dbleed" style={{ opacity: 0.5 + 0.25 * (BLEEDI[e.bleed] || 1) }}></div> : <div style={{ flex: 1 }}></div>}
+                      {hasDot && <div className="ddot" style={{ background: mv.dot, boxShadow: mv.ring ? "0 0 0 1.5px rgba(255,255,255,0.9)" : "none" }}></div>}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+            return (
+              <div key={y + "-" + m}>
+                <div className="dmonth">{monthName}</div>
+                <div className="ddow">{dow.map((x, i) => <span key={i}>{x}</span>)}</div>
+                <div className="dgrid">{cells}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="dlegend">
+          {Object.keys(MOODC).map(k => (
+            <span className="dlg" key={k}><span className="dsw" style={{ background: MOODC[k] }}></span>{MOODL[k]}</span>
+          ))}
+          <span className="dlg"><span className="dsw" style={{ background: "#F47067", borderRadius: 2, height: 4 }}></span>Bleeding</span>
+          <span className="dlg"><span className="dsw" style={{ background: "#A371F7", borderRadius: 2 }}></span>Med change</span>
+        </div>
+        <div className="dmkey">
+          <span className="dmk-title">Mucus dot, dry → fertile:</span>
+          {["sticky", "creamy", "watery", "eggwhite"].map(k => (
+            <span className="dlg" key={k}><span className="dmk-dot" style={{ background: MUCUSV[k].dot, boxShadow: MUCUSV[k].ring ? "0 0 0 1.5px rgba(255,255,255,0.9)" : "none" }}></span>{MUCUSV[k].label}</span>
+          ))}
+        </div>
+
+        {sel && selE ? (
+          <div className="ddetail">
+            <div className="dd-date">{fmtL(sel)}</div>
+            {selE.mood && <div>Mood: <b style={{ color: MOODC[selE.mood] }}>{MOODL[selE.mood]}</b></div>}
+            {selE.sleep && <div>Sleep: {SLEEPL[selE.sleep] || selE.sleep}</div>}
+            {selE.bleed && selE.bleed !== "none" && <div>Bleed: {BLEEDL[selE.bleed] || selE.bleed}</div>}
+            {selE.mucus && <div>Mucus: {(MUCUSV[selE.mucus] || {}).label || selE.mucus}</div>}
+            {selE.body && selE.body.length > 0 && <div>Body: {selE.body.map(b => BODYL[b] || b).join(", ")}</div>}
+            {medDates.has(sel) && <div style={{ color: "#A371F7" }}>💊 {(medList.find(m => m.date === sel) || {}).note}</div>}
+            {selE.context && <div className="dd-ctx">"{selE.context}"</div>}
+          </div>
+        ) : (
+          <div className="ddetail muted">Tap any logged day to see the full entry.</div>
+        )}
+      </div>
+
+      <div className="d-sec">
+        <p className="d-lbl">Bleeding rhythm</p>
+        <p className="d-note">Your bleed episodes and the gap between each. With an IUD this won't be a clean monthly clock, but the intervals still tell a story.</p>
+        <div className="depi-wrap">
+          {episodes.length === 0 ? (
+            <p className="d-note" style={{ margin: 0 }}>No bleeding logged yet.</p>
+          ) : episodes.map((ep, i) => {
+            const len = ep.days.length;
+            const label = ep.maxI >= 2 ? "light bleed" : "spotting";
+            const range = ep.start === ep.end ? fmtS(ep.start) : `${fmtS(ep.start)}–${parseD(ep.end).getDate()}`;
+            const tender = tenderBefore(ep.start);
+            const gap = i > 0 ? dbetween(episodes[i - 1].start, ep.start) : null;
+            return (
+              <React.Fragment key={ep.start}>
+                {gap !== null && <div className="dgap">↕ {gap} days later</div>}
+                <div className="depi">
+                  <div className="depi-date">{range}</div>
+                  <div className="depi-meta"><b>{label}</b>, {len} day{len > 1 ? "s" : ""}{tender && <><br /><span className="dtender">🍈 tender breasts before</span></>}</div>
+                </div>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </div>
+
+      {episodes.length > 0 && (
+        <div className="d-sec">
+          <p className="d-lbl">Before a bleed</p>
+          <p className="d-note">What your body flagged in the 5 days leading into each bleed episode.</p>
+          <p className="dinsight">
+            Tender breasts showed up before <b>{tenderCount} of your {episodes.length}</b> bleed episode{episodes.length > 1 ? "s" : ""}, which makes it your most reliable heads-up that bleeding is coming.
+            {preTop.length > 0 && <span> Most common in the 5 days before a bleed: {preTop.map(([t, n]) => `${BODYL[t] || t} (${n})`).join(", ")}.</span>}
+          </p>
+        </div>
+      )}
+
+      {medList.length > 0 && (
+        <div className="d-sec">
+          <p className="d-lbl">Medicine changes</p>
+          <p className="d-note">Marked on the calendar too, so you can watch mood and sleep in the weeks after each change.</p>
+          {medList.slice().sort((a, b) => a.date.localeCompare(b.date)).map(mv => (
+            <div className="dmedrow" key={mv.id || (mv.date + mv.note)}>
+              <div className="dmed-date">{fmtS(mv.date)}</div>
+              <div className="dmed-note">{mv.note}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CycleTracker() {
   const [entries, setEntries] = useState({});
   const [meds, setMeds] = useState([]);
@@ -557,9 +806,10 @@ function CycleTracker() {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 2, marginTop: 12 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 2, marginTop: 12 }}>
           {[
             { key: "log", label: "Log" },
+            { key: "dashboard", label: "Dashboard" },
             { key: "history", label: "History" },
             { key: "meds", label: "Meds" },
             { key: "export", label: "Share" },
@@ -1001,6 +1251,8 @@ function CycleTracker() {
         </div>
       )}
 
+      {view === "dashboard" && <Dashboard entries={entries} meds={meds} />}
+
       {view === "meds" && (
         <div style={{ padding: "16px 20px" }}>
           <div style={{
@@ -1024,7 +1276,10 @@ function CycleTracker() {
               max={getToday()}
               onChange={e => setMedDate(e.target.value)}
               style={{
-                width: "100%", padding: "10px 12px", background: "#0A0C10",
+                width: "100%", minWidth: 0, maxWidth: "100%",
+                WebkitAppearance: "none", MozAppearance: "none", appearance: "none",
+                display: "block", height: 40,
+                padding: "10px 12px", background: "#0A0C10",
                 border: "1px solid #21262D", borderRadius: 8, color: "#E6EDF3",
                 fontFamily: "'DM Sans', sans-serif", fontSize: 13, outline: "none",
                 boxSizing: "border-box", marginBottom: 8,
