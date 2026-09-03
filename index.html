@@ -51,7 +51,7 @@ const { useState, useEffect, useCallback } = React;
 const MOOD_OPTIONS = [
   { value: "green", emoji: "🟢", label: "Good" },
   { value: "yellow", emoji: "🟡", label: "Meh" },
-  { value: "orange", emoji: "🟠", label: "Rough" },
+  { value: "orange", emoji: "🟡", label: "Meh" },
   { value: "red", emoji: "🔴", label: "Bad" },
 ];
 
@@ -117,7 +117,7 @@ function formatDateShort(dateStr) {
 const moodColor = {
   green: "#2D6A4F",
   yellow: "#E9C46A",
-  orange: "#E76F51",
+  orange: "#E9C46A",
   red: "#C1121F",
 };
 
@@ -127,8 +127,9 @@ const MEDS_KEY = "cycle-tracker-meds";
 function Dashboard({ entries, meds }) {
   const [sel, setSel] = useState(null);
 
-  const MOODC = { green: "#2E9E6A", yellow: "#E9C46A", orange: "#E76F51", red: "#C1121F" };
-  const MOODL = { green: "Good", yellow: "Meh", orange: "Rough", red: "Bad" };
+  const MOODC = { green: "#2E9E6A", yellow: "#E9C46A", red: "#C1121F" };
+  const MOODL = { green: "Good", yellow: "Meh", red: "Bad" };
+  const mkey = (m) => (m === "orange" ? "yellow" : m); // old "rough" now renders as yellow
   const SLEEPL = { solid: "Solid", ok: "Ok", "woke-early": "Woke early", awful: "Awful" };
   const BLEEDL = { spotting: "spotting", light: "light", heavier: "heavier" };
   const BLEEDI = { spotting: 1, light: 2, heavier: 3 };
@@ -225,15 +226,15 @@ function Dashboard({ entries, meds }) {
         .dash .dcell.sel { outline: 2px solid #6CB6FF; }
         .dash .dmarks { position: absolute; left: 4px; bottom: 3px; right: 4px; display: flex; align-items: center; gap: 3px; height: 6px; }
         .dash .dbleed { flex: 1; height: 3px; border-radius: 2px; background: #F47067; }
-        .dash .ddot { width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto; }
+        .dash .ddot { width: 6px; height: 6px; border-radius: 0 50% 50% 50%; transform: rotate(45deg); flex: 0 0 auto; }
         .dash .dacne { width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto; }
-        .dash .dmed { position: absolute; top: 3px; left: 4px; width: 6px; height: 6px; border-radius: 2px; background: #A371F7; }
+        .dash .dmed { position: absolute; top: 1px; left: 3px; font-size: 9px; line-height: 1; color: #A371F7; }
         .dash .dlegend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 14px; }
         .dash .dlg { display: flex; align-items: center; gap: 6px; font-family: 'DM Sans', sans-serif; font-size: 11px; color: #8B949E; }
         .dash .dsw { width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto; }
         .dash .dmkey { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; padding-top: 12px; border-top: 1px dashed #21262D; }
         .dash .dmk-title { font-family: 'DM Sans', sans-serif; font-size: 11px; color: #565E68; font-weight: 600; }
-        .dash .dmk-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+        .dash .dmk-dot { width: 8px; height: 8px; border-radius: 0 50% 50% 50%; transform: rotate(45deg); flex: 0 0 auto; }
         .dash .ddetail { margin-top: 14px; background: #161B22; border: 1px solid #21262D; border-radius: 12px; padding: 14px; font-family: 'DM Sans', sans-serif; font-size: 12.5px; color: #8B949E; line-height: 1.6; }
         .dash .ddetail.muted { color: #565E68; }
         .dash .ddetail .dd-date { font-family: 'Newsreader', serif; font-size: 15px; color: #E6EDF3; margin-bottom: 6px; }
@@ -272,7 +273,7 @@ function Dashboard({ entries, meds }) {
               const ds = `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
               const e = entries[ds];
               if (!e) { cells.push(<div key={ds} className="dcell">{d}</div>); continue; }
-              const mc = e.mood && MOODC[e.mood] ? MOODC[e.mood] : "#2b323b";
+              const mc = e.mood && MOODC[mkey(e.mood)] ? MOODC[mkey(e.mood)] : "#2b323b";
               const bg = e.mood ? mc + "44" : "#1b212a";
               const bord = e.mood ? mc + "88" : "#2b323b";
               const hasBleed = e.bleed && e.bleed !== "none";
@@ -281,13 +282,13 @@ function Dashboard({ entries, meds }) {
               const ac = acneState(e);
               cells.push(
                 <div key={ds} className={"dcell logged" + (sel === ds ? " sel" : "")} style={{ background: bg, borderColor: bord }} onClick={() => setSel(ds)}>
-                  {medDates.has(ds) && <div className="dmed"></div>}
+                  {medDates.has(ds) && <div className="dmed">★</div>}
                   {d}
                   {(hasBleed || hasDot || ac) && (
                     <div className="dmarks">
                       {hasBleed ? <div className="dbleed" style={{ opacity: 0.5 + 0.25 * (BLEEDI[e.bleed] || 1) }}></div> : <div style={{ flex: 1 }}></div>}
                       {hasDot && <div className="ddot" style={{ background: mv.dot, boxShadow: mv.ring ? "0 0 0 1.5px rgba(255,255,255,0.9)" : "none" }}></div>}
-                      {ac && <div className="dacne" style={{ background: ac === "cystic" ? "#E5484D" : "#F4A261", boxShadow: ac === "cystic" ? "0 0 0 1.5px rgba(255,255,255,0.55)" : "none" }}></div>}
+                      {ac && <div className="dacne" style={{ background: ac === "cystic" ? "#FF2D55" : "#F4A261", boxShadow: ac === "cystic" ? "0 0 0 1.5px rgba(255,255,255,0.6)" : "none" }}></div>}
                     </div>
                   )}
                 </div>
@@ -308,8 +309,8 @@ function Dashboard({ entries, meds }) {
             <span className="dlg" key={k}><span className="dsw" style={{ background: MOODC[k] }}></span>{MOODL[k]}</span>
           ))}
           <span className="dlg"><span className="dsw" style={{ background: "#F47067", borderRadius: 2, height: 4 }}></span>Bleeding</span>
-          <span className="dlg"><span className="dsw" style={{ background: "#A371F7", borderRadius: 2 }}></span>Med change</span>
-          <span className="dlg"><span className="dsw" style={{ background: "#E5484D", borderRadius: "50%" }}></span>Cystic</span>
+          <span className="dlg"><span style={{ color: "#A371F7", fontSize: 12, lineHeight: 1, width: 11, textAlign: "center" }}>★</span>Med change</span>
+          <span className="dlg"><span className="dsw" style={{ background: "#FF2D55", borderRadius: "50%" }}></span>Cystic</span>
           <span className="dlg"><span className="dsw" style={{ background: "#F4A261", borderRadius: "50%" }}></span>Regular acne</span>
         </div>
         <div className="dmkey">
@@ -322,7 +323,7 @@ function Dashboard({ entries, meds }) {
         {sel && selE ? (
           <div className="ddetail">
             <div className="dd-date">{fmtL(sel)}</div>
-            {selE.mood && <div>Mood: <b style={{ color: MOODC[selE.mood] }}>{MOODL[selE.mood]}</b></div>}
+            {selE.mood && <div>Mood: <b style={{ color: MOODC[mkey(selE.mood)] }}>{MOODL[mkey(selE.mood)]}</b></div>}
             {selE.sleep && <div>Sleep: {SLEEPL[selE.sleep] || selE.sleep}</div>}
             {selE.bleed && selE.bleed !== "none" && <div>Bleed: {BLEEDL[selE.bleed] || selE.bleed}</div>}
             {selE.mucus && <div>Mucus: {(MUCUSV[selE.mucus] || {}).label || selE.mucus}</div>}
@@ -974,8 +975,8 @@ function CycleTracker() {
             }}>
               Mood
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
-              {MOOD_OPTIONS.map(opt => {
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+              {MOOD_OPTIONS.filter(o => o.value !== "orange").map(opt => {
                 const selected = current.mood === opt.value;
                 return (
                   <button
