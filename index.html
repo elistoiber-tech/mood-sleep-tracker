@@ -87,6 +87,15 @@ const BODY_TAGS = [
   { value: "cramping", emoji: "🤏", label: "Cramping" },
 ];
 
+// "acne" above is retired from the Body picker but kept for reading old entries.
+const SKIN_TAGS = [
+  { value: "cystic", emoji: "🔥", label: "Cystic" },
+  { value: "regular", emoji: "🔴", label: "Regular acne" },
+  { value: "jawline", emoji: "📍", label: "Jawline/chin" },
+  { value: "tretinoin", emoji: "🧴", label: "Tretinoin" },
+  { value: "extractions", emoji: "🚫", label: "Extractions" },
+];
+
 function getToday() {
   const d = new Date();
   const year = d.getFullYear();
@@ -132,6 +141,15 @@ function Dashboard({ entries, meds }) {
   };
   const BODYL = {};
   BODY_TAGS.forEach(t => { BODYL[t.value] = t.emoji + " " + t.label; });
+  const SKINL = {};
+  SKIN_TAGS.forEach(t => { SKINL[t.value] = t.emoji + " " + t.label; });
+  // Unify new skin field with legacy body "acne" so old history still shows.
+  const acneState = (e) => {
+    const skin = e.skin || [];
+    if (skin.includes("cystic")) return "cystic";
+    if (skin.includes("regular") || (e.body || []).includes("acne")) return "regular";
+    return null;
+  };
 
   const medList = meds || [];
   const medDates = new Set(medList.map(m => m.date));
@@ -208,6 +226,7 @@ function Dashboard({ entries, meds }) {
         .dash .dmarks { position: absolute; left: 4px; bottom: 3px; right: 4px; display: flex; align-items: center; gap: 3px; height: 6px; }
         .dash .dbleed { flex: 1; height: 3px; border-radius: 2px; background: #F47067; }
         .dash .ddot { width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto; }
+        .dash .dacne { width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto; }
         .dash .dmed { position: absolute; top: 3px; left: 4px; width: 6px; height: 6px; border-radius: 2px; background: #A371F7; }
         .dash .dlegend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 14px; }
         .dash .dlg { display: flex; align-items: center; gap: 6px; font-family: 'DM Sans', sans-serif; font-size: 11px; color: #8B949E; }
@@ -259,14 +278,16 @@ function Dashboard({ entries, meds }) {
               const hasBleed = e.bleed && e.bleed !== "none";
               const mv = e.mucus && MUCUSV[e.mucus] ? MUCUSV[e.mucus] : null;
               const hasDot = mv && mv.dot;
+              const ac = acneState(e);
               cells.push(
                 <div key={ds} className={"dcell logged" + (sel === ds ? " sel" : "")} style={{ background: bg, borderColor: bord }} onClick={() => setSel(ds)}>
                   {medDates.has(ds) && <div className="dmed"></div>}
                   {d}
-                  {(hasBleed || hasDot) && (
+                  {(hasBleed || hasDot || ac) && (
                     <div className="dmarks">
                       {hasBleed ? <div className="dbleed" style={{ opacity: 0.5 + 0.25 * (BLEEDI[e.bleed] || 1) }}></div> : <div style={{ flex: 1 }}></div>}
                       {hasDot && <div className="ddot" style={{ background: mv.dot, boxShadow: mv.ring ? "0 0 0 1.5px rgba(255,255,255,0.9)" : "none" }}></div>}
+                      {ac && <div className="dacne" style={{ background: ac === "cystic" ? "#E5484D" : "#F4A261", boxShadow: ac === "cystic" ? "0 0 0 1.5px rgba(255,255,255,0.55)" : "none" }}></div>}
                     </div>
                   )}
                 </div>
@@ -288,6 +309,8 @@ function Dashboard({ entries, meds }) {
           ))}
           <span className="dlg"><span className="dsw" style={{ background: "#F47067", borderRadius: 2, height: 4 }}></span>Bleeding</span>
           <span className="dlg"><span className="dsw" style={{ background: "#A371F7", borderRadius: 2 }}></span>Med change</span>
+          <span className="dlg"><span className="dsw" style={{ background: "#E5484D", borderRadius: "50%" }}></span>Cystic</span>
+          <span className="dlg"><span className="dsw" style={{ background: "#F4A261", borderRadius: "50%" }}></span>Regular acne</span>
         </div>
         <div className="dmkey">
           <span className="dmk-title">Mucus dot, dry → fertile:</span>
@@ -304,6 +327,7 @@ function Dashboard({ entries, meds }) {
             {selE.bleed && selE.bleed !== "none" && <div>Bleed: {BLEEDL[selE.bleed] || selE.bleed}</div>}
             {selE.mucus && <div>Mucus: {(MUCUSV[selE.mucus] || {}).label || selE.mucus}</div>}
             {selE.body && selE.body.length > 0 && <div>Body: {selE.body.map(b => BODYL[b] || b).join(", ")}</div>}
+            {selE.skin && selE.skin.length > 0 && <div>Skin: {selE.skin.map(s => SKINL[s] || s).join(", ")}</div>}
             {medDates.has(sel) && <div style={{ color: "#A371F7" }}>💊 {(medList.find(m => m.date === sel) || {}).note}</div>}
             {selE.context && <div className="dd-ctx">"{selE.context}"</div>}
           </div>
@@ -347,6 +371,30 @@ function Dashboard({ entries, meds }) {
           </p>
         </div>
       )}
+
+      {(() => {
+        let cystic = 0, regular = 0, tret = 0, jaw = 0; const extractions = [];
+        keys.forEach(k => {
+          const e = entries[k]; const skin = e.skin || []; const ac = acneState(e);
+          if (ac === "cystic") cystic++; else if (ac === "regular") regular++;
+          if (skin.includes("tretinoin")) tret++;
+          if (skin.includes("jawline")) jaw++;
+          if (skin.includes("extractions")) extractions.push(k);
+        });
+        if (cystic + regular + tret + jaw + extractions.length === 0) return null;
+        return (
+          <div className="d-sec">
+            <p className="d-lbl">Skin</p>
+            <p className="d-note">Cystic and regular acne show on the calendar (cystic = deep red dot, regular = orange). Tretinoin and extractions are tracked here.</p>
+            <div className="dinsight" style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              <div>🔥 Cystic: <b>{cystic}</b> {cystic === 1 ? "day" : "days"}  ·  🔴 Regular: <b>{regular}</b> {regular === 1 ? "day" : "days"}</div>
+              {jaw > 0 && <div>📍 Jawline / chin: <b>{jaw}</b> {jaw === 1 ? "day" : "days"}</div>}
+              <div>🧴 Tretinoin applied: <b>{tret}</b> {tret === 1 ? "day" : "days"}</div>
+              {extractions.length > 0 && <div>🚫 Extractions: {extractions.map(d => fmtS(d)).join(", ")}</div>}
+            </div>
+          </div>
+        );
+      })()}
 
       {medList.length > 0 && (
         <div className="d-sec">
@@ -451,6 +499,7 @@ function CycleTracker() {
     bleed: "none",
     mucus: null,
     body: [],
+    skin: [],
     context: "",
   };
 
@@ -468,6 +517,14 @@ function CycleTracker() {
       ? body.filter(t => t !== tag)
       : [...body, tag];
     updateField("body", updated);
+  };
+
+  const toggleSkin = (tag) => {
+    const skin = current.skin || [];
+    const updated = skin.includes(tag)
+      ? skin.filter(t => t !== tag)
+      : [...skin, tag];
+    updateField("skin", updated);
   };
 
   // Navigate dates
@@ -508,6 +565,13 @@ function CycleTracker() {
       }
       if (bodyTags.length > 0) {
         text += `body: ${bodyTags.join(", ")}\n`;
+      }
+      const skinTags = (e.skin || []).map(s => {
+        const t = SKIN_TAGS.find(x => x.value === s);
+        return t ? t.emoji + " " + t.label.toLowerCase() : s;
+      });
+      if (skinTags.length > 0) {
+        text += `skin: ${skinTags.join(", ")}\n`;
       }
       if (e.context && e.context.trim()) {
         text += `context: ${e.context.trim()}\n`;
@@ -605,7 +669,7 @@ function CycleTracker() {
       if (new Date(year, month, day) > now) year -= 1;
       const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 
-      const entry = { mood: null, sleep: null, sleepTime: "", bleed: "none", mucus: null, body: [], context: "" };
+      const entry = { mood: null, sleep: null, sleepTime: "", bleed: "none", mucus: null, body: [], skin: [], context: "" };
       const contextLines = [];
       let inContext = false;
 
@@ -647,6 +711,13 @@ function CycleTracker() {
           const rest = line.slice(5).trim();
           entry.body = rest.split(",").map(t => t.trim()).map(t => {
             const found = BODY_TAGS.find(tag => t.startsWith(tag.emoji));
+            return found ? found.value : null;
+          }).filter(Boolean);
+        } else if (line.startsWith("skin:")) {
+          inContext = false;
+          const rest = line.slice(5).trim();
+          entry.skin = rest.split(",").map(t => t.trim()).map(t => {
+            const found = SKIN_TAGS.find(tag => t.startsWith(tag.emoji));
             return found ? found.value : null;
           }).filter(Boolean);
         } else if (line.startsWith("context:")) {
@@ -1106,7 +1177,7 @@ function CycleTracker() {
               Body <span style={{ textTransform: "none", fontWeight: 400, opacity: 0.6 }}>(tap all that apply)</span>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {BODY_TAGS.map(tag => {
+              {BODY_TAGS.filter(t => t.value !== "acne").map(tag => {
                 const selected = (current.body || []).includes(tag.value);
                 return (
                   <button
@@ -1115,6 +1186,48 @@ function CycleTracker() {
                     style={{
                       background: selected ? "#F4A26133" : "#161B22",
                       border: selected ? "2px solid #F4A261" : "2px solid transparent",
+                      borderRadius: 20,
+                      padding: "8px 14px",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <span style={{ fontSize: 14 }}>{tag.emoji}</span>
+                    <span style={{
+                      fontFamily: "'DM Sans', sans-serif",
+                      fontSize: 11,
+                      color: selected ? "#E6EDF3" : "#484F58",
+                    }}>{tag.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 11,
+              color: "#8B949E",
+              marginBottom: 8,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}>
+              Skin <span style={{ textTransform: "none", fontWeight: 400, opacity: 0.6 }}>(tap all that apply)</span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {SKIN_TAGS.map(tag => {
+                const selected = (current.skin || []).includes(tag.value);
+                return (
+                  <button
+                    key={tag.value}
+                    onClick={() => toggleSkin(tag.value)}
+                    style={{
+                      background: selected ? "#E06B7433" : "#161B22",
+                      border: selected ? "2px solid #E06B74" : "2px solid transparent",
                       borderRadius: 20,
                       padding: "8px 14px",
                       cursor: "pointer",
@@ -1200,6 +1313,7 @@ function CycleTracker() {
               const moodObj = MOOD_OPTIONS.find(m => m.value === e.mood);
               const sleepObj = SLEEP_OPTIONS.find(s => s.value === e.sleep);
               const bodyTags = (e.body || []).map(b => BODY_TAGS.find(t => t.value === b)).filter(Boolean);
+              const skinTags = (e.skin || []).map(s => SKIN_TAGS.find(t => t.value === s)).filter(Boolean);
               const hasBleed = e.bleed && e.bleed !== "none";
 
               return (
@@ -1234,6 +1348,9 @@ function CycleTracker() {
                     <div style={{ display: "flex", gap: 3, flexWrap: "wrap", justifyContent: "flex-end" }}>
                       {bodyTags.slice(0, 4).map(t => (
                         <span key={t.value} style={{ fontSize: 10 }}>{t.emoji}</span>
+                      ))}
+                      {skinTags.slice(0, 4).map(t => (
+                        <span key={"s" + t.value} style={{ fontSize: 10 }}>{t.emoji}</span>
                       ))}
                     </div>
                   </div>
