@@ -70,11 +70,10 @@ const BLEED_OPTIONS = [
 ];
 
 const MUCUS_OPTIONS = [
-  { value: "dry", emoji: "🏜️", label: "Dry" },
-  { value: "sticky", emoji: "🩹", label: "Sticky" },
-  { value: "creamy", emoji: "🥛", label: "Creamy" },
-  { value: "watery", emoji: "💧", label: "Watery" },
-  { value: "eggwhite", emoji: "🥚", label: "Egg-white" },
+  { value: "dry", emoji: "🏜️", label: "Dry", desc: "Dry / relatively dry" },
+  { value: "sticky", emoji: "🩹", label: "Sticky", desc: "Cloudy / small sticky globs" },
+  { value: "creamy", emoji: "🥛", label: "Creamy", desc: "Creamy / cloudy / thick" },
+  { value: "eggwhite", emoji: "🥚", label: "Egg white", desc: "Clear / stretchy / slippery, like raw egg white" },
 ];
 
 const BODY_TAGS = [
@@ -128,8 +127,8 @@ function Dashboard({ entries, meds }) {
     dry: { dot: null, label: "Dry" },
     sticky: { dot: "#4E6E8E", label: "Sticky" },
     creamy: { dot: "#5A93C9", label: "Creamy" },
+    eggwhite: { dot: "#CDEBFF", ring: true, label: "Egg white" },
     watery: { dot: "#6CB6FF", label: "Watery" },
-    eggwhite: { dot: "#CDEBFF", ring: true, label: "Egg-white" },
   };
   const BODYL = {};
   BODY_TAGS.forEach(t => { BODYL[t.value] = t.emoji + " " + t.label; });
@@ -292,7 +291,7 @@ function Dashboard({ entries, meds }) {
         </div>
         <div className="dmkey">
           <span className="dmk-title">Mucus dot, dry → fertile:</span>
-          {["sticky", "creamy", "watery", "eggwhite"].map(k => (
+          {["sticky", "creamy", "eggwhite"].map(k => (
             <span className="dlg" key={k}><span className="dmk-dot" style={{ background: MUCUSV[k].dot, boxShadow: MUCUSV[k].ring ? "0 0 0 1.5px rgba(255,255,255,0.9)" : "none" }}></span>{MUCUSV[k].label}</span>
           ))}
         </div>
@@ -1054,7 +1053,7 @@ function CycleTracker() {
             }}>
               Cervical mucus <span style={{ textTransform: "none", fontWeight: 400, opacity: 0.6 }}>(tap one, tap again to clear)</span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {MUCUS_OPTIONS.map(opt => {
                 const selected = current.mucus === opt.value;
                 return (
@@ -1065,23 +1064,30 @@ function CycleTracker() {
                       background: selected ? "#6CB6FF33" : "#161B22",
                       border: selected ? "2px solid #6CB6FF" : "2px solid transparent",
                       borderRadius: 10,
-                      padding: "12px 2px",
+                      padding: "10px 12px",
                       cursor: "pointer",
                       display: "flex",
-                      flexDirection: "column",
                       alignItems: "center",
-                      gap: 4,
+                      gap: 10,
+                      textAlign: "left",
                       transition: "all 0.15s",
                     }}
                   >
-                    <span style={{ fontSize: 20 }}>{opt.emoji}</span>
-                    <span style={{
-                      fontFamily: "'DM Sans', sans-serif",
-                      fontSize: 9,
-                      lineHeight: 1.1,
-                      textAlign: "center",
-                      color: selected ? "#E6EDF3" : "#484F58",
-                    }}>{opt.label}</span>
+                    <span style={{ fontSize: 20, flex: "0 0 auto" }}>{opt.emoji}</span>
+                    <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <span style={{
+                        fontFamily: "'DM Sans', sans-serif",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: selected ? "#E6EDF3" : "#C9D1D9",
+                      }}>{opt.label}</span>
+                      <span style={{
+                        fontFamily: "'DM Sans', sans-serif",
+                        fontSize: 11,
+                        lineHeight: 1.3,
+                        color: selected ? "#B7C2CC" : "#565E68",
+                      }}>{opt.desc}</span>
+                    </span>
                   </button>
                 );
               })}
