@@ -81,17 +81,22 @@ const BODY_TAGS = [
   { value: "snacky", emoji: "🧁", label: "Snacky" },
   { value: "lean", emoji: "🦴", label: "Lean" },
   { value: "acne", emoji: "🔥", label: "Acne" },
+  { value: "boobs-full", emoji: "🍈🍈", label: "Boobs full" },
+  { value: "boobs-sore", emoji: "🍉", label: "Boobs sore" },
   { value: "boobs-tender", emoji: "🍈", label: "Boobs tender" },
   { value: "high-energy", emoji: "⚡", label: "High energy" },
   { value: "low-energy", emoji: "🔋", label: "Low energy" },
   { value: "cramping", emoji: "🤏", label: "Cramping" },
 ];
 
-// "acne" above is retired from the Body picker but kept for reading old entries.
+// "acne" and legacy "boobs-tender" above are retired from the Body picker but kept
+// for reading old entries. New logging uses "boobs-full" / "boobs-sore" (mutually
+// exclusive); legacy "boobs-tender" reads as "full" via breastState().
 const SKIN_TAGS = [
   { value: "cystic", emoji: "🔥", label: "Cystic" },
   { value: "regular", emoji: "🔴", label: "Regular acne" },
   { value: "jawline", emoji: "📍", label: "Jawline/chin" },
+  { value: "oily", emoji: "💧", label: "Oily" },
   { value: "tretinoin", emoji: "🧴", label: "Tretinoin" },
   { value: "extractions", emoji: "🚫", label: "Extractions" },
 ];
@@ -123,6 +128,46 @@ const moodColor = {
 
 const STORAGE_KEY = "cycle-tracker-entries";
 const MEDS_KEY = "cycle-tracker-meds";
+
+// ---- Read-time migration + phase helpers (nothing rewritten in storage) ----
+// Breast tenderness: new full/sore split. Legacy "boobs-tender" reads as "full".
+function breastState(e) {
+  const body = (e && e.body) || [];
+  if (body.includes("boobs-sore")) return "sore";
+  if (body.includes("boobs-full")) return "full";
+  if (body.includes("boobs-tender")) return "full"; // legacy days
+  return null;
+}
+function breastIsLegacy(e) {
+  const body = (e && e.body) || [];
+  return !body.includes("boobs-sore") && !body.includes("boobs-full") && body.includes("boobs-tender");
+}
+function hasBreastTenderness(e) { return breastState(e) !== null; }
+// Skin signal the phase estimate uses: jawline/chin OR cystic.
+function skinFlag(e) {
+  const skin = (e && e.skin) || [];
+  return skin.includes("jawline") || skin.includes("cystic");
+}
+
+function shiftStr(dateStr, days) {
+  const d = new Date(dateStr + "T12:00:00");
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function daysBetweenStr(a, b) {
+  return Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 86400000);
+}
+
+// Phase estimate: evaluated top-down, first match wins.
+function estimatePhase({ mucus, breasts, skinF, released, breastsLegacy }) {
+  if (mucus === "eggwhite") return { phase: "Fertile window", key: "fertile", conf: "High" };
+  if (released) return { phase: "Cycle restart", key: "restart", conf: "High" };
+  if (breasts === "sore" && skinF) return { phase: "Late luteal", key: "late", conf: breastsLegacy ? "Medium" : "High" };
+  if (breasts === "full" && (mucus === "dry" || mucus === "sticky")) return { phase: "Early luteal", key: "early", conf: "Medium" };
+  if (mucus === "creamy" && breasts !== "sore") return { phase: "Approaching fertile", key: "approaching", conf: "Medium" };
+  if ((mucus === "dry" || mucus === "sticky") && !breasts && !skinF) return { phase: "Follicular", key: "follicular", conf: "Medium" };
+  return { phase: "Unclear", key: "unclear", conf: "Low" };
+}
 
 function Dashboard({ entries, meds }) {
   const [sel, setSel] = useState(null);
@@ -190,14 +235,14 @@ function Dashboard({ entries, meds }) {
     else { cur = { start: d, end: d, days: [d], maxI: BLEEDI[entries[d].bleed] || 1 }; episodes.push(cur); }
   });
   const tenderBefore = (start) => {
-    for (let b = 1; b <= 5; b++) { const ds = dstr(new Date(parseD(start).getTime() - b * 86400000)); if (entries[ds] && (entries[ds].body || []).includes("boobs-tender")) return true; }
+    for (let b = 1; b <= 5; b++) { const ds = dstr(new Date(parseD(start).getTime() - b * 86400000)); if (entries[ds] && hasBreastTenderness(entries[ds])) return true; }
     return false;
   };
   const preTally = {}; let tenderCount = 0;
   episodes.forEach(ep => {
     const seen = new Set();
     for (let b = 1; b <= 5; b++) { const ds = dstr(new Date(parseD(ep.start).getTime() - b * 86400000)); if (entries[ds]) (entries[ds].body || []).forEach(t => seen.add(t)); }
-    if (seen.has("boobs-tender")) tenderCount++;
+    if (seen.has("boobs-tender") || seen.has("boobs-full") || seen.has("boobs-sore")) tenderCount++;
     seen.forEach(t => preTally[t] = (preTally[t] || 0) + 1);
   });
   const preTop = Object.entries(preTally).sort((a, b) => b[1] - a[1]).slice(0, 3);
@@ -413,6 +458,208 @@ function Dashboard({ entries, meds }) {
   );
 }
 
+function Signals({ entries }) {
+  const [showWhy, setShowWhy] = useState(false);
+  const today = getToday();
+  const todayE = entries[today] || {};
+
+  // Picker, prefilled from today's entry so it's usually zero taps.
+  const [mucus, setMucus] = useState(todayE.mucus || null);
+  const [breasts, setBreasts] = useState(breastState(todayE));
+  const [jaw, setJaw] = useState(((todayE.skin) || []).includes("jawline"));
+  const [cyst, setCyst] = useState(((todayE.skin) || []).includes("cystic"));
+
+  const skinF = jaw || cyst;
+  const released = (() => {
+    if (breasts) return false;
+    for (let b = 1; b <= 3; b++) {
+      const d = shiftStr(today, -b);
+      if (entries[d] && hasBreastTenderness(entries[d])) return true;
+    }
+    return false;
+  })();
+  const est = estimatePhase({ mucus, breasts, skinF, released, breastsLegacy: breastIsLegacy(todayE) });
+
+  const keys = Object.keys(entries).sort();
+  const lastEgg = [...keys].reverse().find(k => entries[k].mucus === "eggwhite");
+  const daysSinceEgg = lastEgg ? daysBetweenStr(lastEgg, today) : null;
+  const isReleaseDay = (d) => {
+    if (!entries[d] || hasBreastTenderness(entries[d])) return false;
+    for (let b = 1; b <= 3; b++) {
+      const p = shiftStr(d, -b);
+      if (entries[p] && hasBreastTenderness(entries[p])) return true;
+    }
+    return false;
+  };
+  const lastRelease = [...keys].reverse().find(isReleaseDay);
+  const daysSinceRelease = lastRelease ? daysBetweenStr(lastRelease, today) : null;
+
+  const CONF = { High: "#2E9E6A", Medium: "#E9C46A", Low: "#6E7681" };
+  const MUCUS_PICK = [
+    { value: "dry", emoji: "🏜️", label: "Dry" },
+    { value: "sticky", emoji: "🩹", label: "Sticky" },
+    { value: "creamy", emoji: "🥛", label: "Creamy" },
+    { value: "eggwhite", emoji: "🥚", label: "Egg white" },
+  ];
+  const BREAST_PICK = [
+    { value: "full", emoji: "🍈🍈", label: "Full" },
+    { value: "sore", emoji: "🍉", label: "Sore" },
+  ];
+
+  return (
+    <div className="sig">
+      <style>{`
+        .sig { padding: 16px 20px; font-family: 'DM Sans', sans-serif; }
+        .sig .s-lead { font-size: 12.5px; color: #8B949E; line-height: 1.6; margin: 0 0 6px; }
+        .sig .s-lead b { color: #C9D1D9; font-weight: 600; }
+        .sig .s-why { background: none; border: none; color: #6CB6FF; font-family: 'DM Sans', sans-serif; font-size: 12px; cursor: pointer; padding: 0; margin: 0 0 4px; }
+        .sig .s-note { background: #12161C; border: 1px solid #21262D; border-radius: 10px; padding: 12px 14px; font-size: 11.5px; color: #8B949E; line-height: 1.6; margin: 8px 0 0; }
+        .sig .s-note p { margin: 0 0 8px; }
+        .sig .s-note p:last-child { margin: 0; }
+        .sig .s-note b { color: #C9D1D9; font-weight: 600; }
+        .sig .s-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 18px 0 0; }
+        .sig .s-stat { background: #12161C; border: 1px solid #21262D; border-radius: 12px; padding: 13px 12px; text-align: center; }
+        .sig .s-stat .n { font-family: 'Newsreader', serif; font-size: 26px; color: #E6EDF3; line-height: 1; }
+        .sig .s-stat .n small { font-size: 13px; color: #8B949E; }
+        .sig .s-stat .l { font-size: 10.5px; color: #565E68; margin-top: 6px; line-height: 1.3; }
+        .sig .s-sec-lbl { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #8B949E; margin: 26px 0 3px; }
+        .sig .s-sec-note { font-size: 11.5px; color: #565E68; margin: 0 0 12px; }
+        .sig .s-pick-lbl { font-size: 10.5px; color: #8B949E; margin: 12px 0 6px; text-transform: uppercase; letter-spacing: 0.06em; }
+        .sig .s-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        .sig .s-chip { background: #161B22; border: 2px solid transparent; border-radius: 20px; padding: 8px 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: 'DM Sans', sans-serif; font-size: 11.5px; color: #484F58; }
+        .sig .s-chip .e { font-size: 14px; }
+        .sig .s-chip.on { color: #E6EDF3; }
+        .sig .s-chip.on.mucus { background: #6CB6FF22; border-color: #6CB6FF; }
+        .sig .s-chip.on.breast { background: #F4A26122; border-color: #F4A261; }
+        .sig .s-chip.on.skin { background: #E06B7422; border-color: #E06B74; }
+        .sig .s-est { margin-top: 18px; background: #12161C; border: 1px solid #21262D; border-radius: 14px; padding: 18px; text-align: center; }
+        .sig .s-est .cap { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: #565E68; }
+        .sig .s-est .phase { font-family: 'Newsreader', serif; font-size: 26px; color: #E6EDF3; margin: 6px 0 10px; line-height: 1.1; }
+        .sig .s-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 12px; border-radius: 999px; }
+        .sig .s-cards { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+        .sig .s-card { background: #12161C; border: 1px solid #21262D; border-radius: 14px; padding: 15px 16px; }
+        .sig .s-card.key { border-color: #6CB6FF; background: #6CB6FF14; }
+        .sig .s-card.matched { box-shadow: 0 0 0 2px #2E9E6A; }
+        .sig .s-card-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+        .sig .s-card-h .nm { font-family: 'Newsreader', serif; font-size: 18px; color: #E6EDF3; }
+        .sig .s-card-h .rg { font-size: 10.5px; color: #565E68; flex: 0 0 auto; }
+        .sig .s-key-tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #6CB6FF; background: #6CB6FF22; border-radius: 6px; padding: 2px 7px; margin-left: 6px; }
+        .sig .s-mine { font-size: 9.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: #7EE8A6; margin-left: 6px; }
+        .sig .s-line { font-size: 13px; color: #C9D1D9; line-height: 1.7; }
+        .sig .s-line b { color: #FFD479; font-weight: 700; }
+        .sig .s-card.key .s-line b { color: #CDEBFF; }
+        .sig .s-quiet { color: #8B949E; }
+        .sig .s-ital { font-style: italic; font-family: 'Newsreader', serif; font-size: 13.5px; color: #9BA6B0; line-height: 1.55; margin-top: 8px; display: block; }
+        .sig .s-foot { margin-top: 28px; padding-top: 18px; border-top: 1px dashed #21262D; }
+        .sig .s-foot .s-lead { font-size: 12px; color: #7d8590; }
+      `}</style>
+
+      <div className="s-stats">
+        <div className="s-stat">
+          <div className="n">{daysSinceEgg === null ? "—" : daysSinceEgg} {daysSinceEgg !== null && <small>{daysSinceEgg === 1 ? "day" : "days"}</small>}</div>
+          <div className="l">since last 🥚 egg white</div>
+        </div>
+        <div className="s-stat">
+          <div className="n">{daysSinceRelease === null ? "—" : daysSinceRelease} {daysSinceRelease !== null && <small>{daysSinceRelease === 1 ? "day" : "days"}</small>}</div>
+          <div className="l">since last tenderness release</div>
+        </div>
+      </div>
+
+      <p className="s-sec-lbl">Where am I now</p>
+      <p className="s-sec-note">Prefilled from today's log. Change anything to test a "what if."</p>
+
+      <div className="s-pick-lbl">Mucus</div>
+      <div className="s-chips">
+        {MUCUS_PICK.map(o => (
+          <button key={o.value} className={"s-chip mucus" + (mucus === o.value ? " on" : "")} onClick={() => setMucus(mucus === o.value ? null : o.value)}>
+            <span className="e">{o.emoji}</span>{o.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="s-pick-lbl">Breasts</div>
+      <div className="s-chips">
+        {BREAST_PICK.map(o => (
+          <button key={o.value} className={"s-chip breast" + (breasts === o.value ? " on" : "")} onClick={() => setBreasts(breasts === o.value ? null : o.value)}>
+            <span className="e">{o.emoji}</span>{o.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="s-pick-lbl">Skin</div>
+      <div className="s-chips">
+        <button className={"s-chip skin" + (jaw ? " on" : "")} onClick={() => setJaw(!jaw)}><span className="e">📍</span>Jawline/chin</button>
+        <button className={"s-chip skin" + (cyst ? " on" : "")} onClick={() => setCyst(!cyst)}><span className="e">🔥</span>Cystic</button>
+      </div>
+
+      <div className="s-est">
+        <div className="cap">Best estimate right now</div>
+        <div className="phase">{est.phase}</div>
+        <span className="s-badge" style={{ background: CONF[est.conf] + "22", color: CONF[est.conf], border: "1px solid " + CONF[est.conf] + "66" }}>{est.conf} confidence</span>
+      </div>
+
+      <p className="s-sec-lbl" style={{ marginTop: 30 }}>The five phases</p>
+      <p className="s-sec-note">Built from the same words and emoji as your Log. A bolded line is that phase's standout signal.</p>
+      <div className="s-cards">
+
+        <div className={"s-card" + (est.key === "restart" ? " matched" : "")}>
+          <div className="s-card-h"><span className="nm">Cycle restart{est.key === "restart" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 1–5</span></div>
+          <div className="s-line">🔴 Spotting or Light, or nothing at all</div>
+          <div className="s-line">🏜️ Dry</div>
+          <div className="s-line">🔋 Low energy day 1–2, then off</div>
+          <div className="s-line s-quiet">Skin quiet, old ones healing</div>
+          <span className="s-ital">Boobs tender drops off. That release is your anchor, bleed or no bleed.</span>
+        </div>
+
+        <div className={"s-card" + (est.key === "follicular" ? " matched" : "")}>
+          <div className="s-card-h"><span className="nm">Follicular{est.key === "follicular" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 6–11</span></div>
+          <div className="s-line">🏜️ Dry → 🩹 Sticky</div>
+          <div className="s-line">⚡ High energy · 🦴 Lean</div>
+          <div className="s-line s-quiet">Skin quiet</div>
+          <span className="s-ital">Best window for hard lifts. Appetite lowest, so 🧁 Snacky rarely fires here.</span>
+        </div>
+
+        <div className={"s-card key" + (est.key === "fertile" ? " matched" : "")}>
+          <div className="s-card-h"><span className="nm">Fertile window<span className="s-key-tag">key</span>{est.key === "fertile" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 12–16</span></div>
+          <div className="s-line"><b>🥚 Egg white</b> (the one to watch for)</div>
+          <div className="s-line">⚡ High energy</div>
+          <div className="s-line">🍈🍈 Boobs full, brief 1–2 days for some people</div>
+          <span className="s-ital">Last 🥚 day is your marker. Count forward about 12–16 days.</span>
+        </div>
+
+        <div className={"s-card" + (est.key === "early" ? " matched" : "")}>
+          <div className="s-card-h"><span className="nm">Early luteal{est.key === "early" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 17–22</span></div>
+          <div className="s-line">🥚 stops → 🏜️ Dry or 🩹 Sticky within a day or two</div>
+          <div className="s-line"><b>🍈🍈 Boobs full</b> · 🧁 Snacky · 🫧 Bloated · 💧 Oily</div>
+          <div className="s-line">🔋 Low energy for 2–3 days, then rebounds</div>
+          <span className="s-ital">Deep ones forming under the surface before they show.</span>
+        </div>
+
+        <div className={"s-card" + (est.key === "late" ? " matched" : "")}>
+          <div className="s-card-h"><span className="nm">Late luteal{est.key === "late" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 23+</span></div>
+          <div className="s-line">🩹 Sticky or 🥛 Creamy</div>
+          <div className="s-line"><b>🍉 Boobs sore</b> at peak · 🧁 Snacky · 🫧 Bloated · 🔋 Low energy · 🤏 Cramping</div>
+          <div className="s-line">🔥 Cystic · 📍 Jawline/chin</div>
+          <span className="s-ital">Everything feels heavier than it is.</span>
+        </div>
+
+      </div>
+
+      <div className="s-foot">
+        <p className="s-lead"><b>Phase estimates, not facts.</b> A hormonal IUD thins the lining, so bleeding gets light, irregular, or stops. That's the IUD acting locally, not your cycle stopping. Mucus, breast tenderness, and skin are what actually place you.</p>
+        <button className="s-why" onClick={() => setShowWhy(!showWhy)}>{showWhy ? "Hide the fine print ▴" : "Why estimates, not facts? ▾"}</button>
+        {showWhy && (
+          <div className="s-note">
+            <p>Most people keep ovulating on a hormonal IUD, so bleed dates are unreliable here. Mucus, breast tenderness, and skin are the signals that place you.</p>
+            <p><b>Mood, sleep, and appetite are lower-confidence inputs.</b> Mucus, breast tenderness, and skin are the cleaner three.</p>
+            <p>Mid-cycle spotting is <b>not</b> an ovulation signal for you. It's common on a hormonal IUD for unrelated reasons, so it's noise here.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CycleTracker() {
   const [entries, setEntries] = useState({});
   const [meds, setMeds] = useState([]);
@@ -514,9 +761,15 @@ function CycleTracker() {
 
   const toggleBody = (tag) => {
     const body = current.body || [];
-    const updated = body.includes(tag)
-      ? body.filter(t => t !== tag)
-      : [...body, tag];
+    let updated;
+    if (body.includes(tag)) {
+      updated = body.filter(t => t !== tag);
+    } else {
+      updated = [...body, tag];
+      // Boobs full / sore are mutually exclusive — picking one clears the other.
+      if (tag === "boobs-full") updated = updated.filter(t => t !== "boobs-sore");
+      if (tag === "boobs-sore") updated = updated.filter(t => t !== "boobs-full");
+    }
     updateField("body", updated);
   };
 
@@ -881,6 +1134,7 @@ function CycleTracker() {
           {[
             { key: "log", label: "Log" },
             { key: "dashboard", label: "Dashboard" },
+            { key: "signals", label: "Signals" },
             { key: "history", label: "History" },
             { key: "meds", label: "Meds" },
             { key: "export", label: "Share" },
@@ -1080,49 +1334,6 @@ function CycleTracker() {
               textTransform: "uppercase",
               letterSpacing: "0.08em",
             }}>
-              Bleeding
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
-              {BLEED_OPTIONS.map(opt => {
-                const selected = (current.bleed || "none") === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    onClick={() => updateField("bleed", opt.value)}
-                    style={{
-                      background: selected ? (opt.value === "none" ? "#30363D" : "#F4706733") : "#161B22",
-                      border: selected ? `2px solid ${opt.value === "none" ? "#8B949E" : "#F47067"}` : "2px solid transparent",
-                      borderRadius: 10,
-                      padding: "12px 4px",
-                      cursor: "pointer",
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      gap: 4,
-                      transition: "all 0.15s",
-                    }}
-                  >
-                    <span style={{ fontSize: opt.value === "none" ? 16 : 18 }}>{opt.emoji}</span>
-                    <span style={{
-                      fontFamily: "'DM Sans', sans-serif",
-                      fontSize: 10,
-                      color: selected ? "#E6EDF3" : "#484F58",
-                    }}>{opt.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div style={{ marginBottom: 20 }}>
-            <div style={{
-              fontFamily: "'DM Sans', sans-serif",
-              fontSize: 11,
-              color: "#8B949E",
-              marginBottom: 8,
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-            }}>
               Cervical mucus <span style={{ textTransform: "none", fontWeight: 400, opacity: 0.6 }}>(tap one, tap again to clear)</span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1178,7 +1389,7 @@ function CycleTracker() {
               Body <span style={{ textTransform: "none", fontWeight: 400, opacity: 0.6 }}>(tap all that apply)</span>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {BODY_TAGS.filter(t => t.value !== "acne").map(tag => {
+              {BODY_TAGS.filter(t => t.value !== "acne" && t.value !== "boobs-tender").map(tag => {
                 const selected = (current.body || []).includes(tag.value);
                 return (
                   <button
@@ -1254,6 +1465,49 @@ function CycleTracker() {
             <div style={{
               fontFamily: "'DM Sans', sans-serif",
               fontSize: 11,
+              color: "#565E68",
+              marginBottom: 8,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}>
+              Bleeding <span style={{ textTransform: "none", fontWeight: 400, opacity: 0.7 }}>(low signal on an IUD)</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+              {BLEED_OPTIONS.map(opt => {
+                const selected = (current.bleed || "none") === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => updateField("bleed", opt.value)}
+                    style={{
+                      background: selected ? (opt.value === "none" ? "#30363D" : "#F4706733") : "#161B22",
+                      border: selected ? `2px solid ${opt.value === "none" ? "#8B949E" : "#F47067"}` : "2px solid transparent",
+                      borderRadius: 10,
+                      padding: "10px 4px",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: 4,
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <span style={{ fontSize: opt.value === "none" ? 15 : 16 }}>{opt.emoji}</span>
+                    <span style={{
+                      fontFamily: "'DM Sans', sans-serif",
+                      fontSize: 10,
+                      color: selected ? "#E6EDF3" : "#484F58",
+                    }}>{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{
+              fontFamily: "'DM Sans', sans-serif",
+              fontSize: 11,
               color: "#8B949E",
               marginBottom: 8,
               textTransform: "uppercase",
@@ -1262,7 +1516,7 @@ function CycleTracker() {
               Context <span style={{ textTransform: "none", fontWeight: 400, opacity: 0.6 }}>(optional — only if something notable)</span>
             </div>
             <textarea
-              placeholder="e.g. tough convo with Dan, great date, travel day..."
+              placeholder="e.g. stressful day, traveled, hard workout, drank last night, ate late, feeling off..."
               value={current.context || ""}
               onChange={e => updateField("context", e.target.value)}
               rows={2}
@@ -1376,6 +1630,8 @@ function CycleTracker() {
       )}
 
       {view === "dashboard" && <Dashboard entries={entries} meds={meds} />}
+
+      {view === "signals" && <Signals entries={entries} />}
 
       {view === "meds" && (
         <div style={{ padding: "16px 20px" }}>
