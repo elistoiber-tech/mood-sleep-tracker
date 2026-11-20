@@ -662,6 +662,63 @@ function Dashboard({ entries, meds }) {
   );
 }
 
+// Cycle strip: day 1 to 28+ split into the five phases. Rules light the segment; a deep read adds a day marker.
+const STRIP = [
+  { key: "restart", label: "Restart", from: 1, to: 5 },
+  { key: "follicular", label: "Follic.", from: 6, to: 11 },
+  { key: "fertile", label: "Fertile", from: 12, to: 16 },
+  { key: "early", label: "Early lut.", from: 17, to: 22 },
+  { key: "late", label: "Late lut.", from: 23, to: 29 },
+];
+const STRIP_TOTAL = 29;
+const STRIP_NAMES = { restart: "Cycle restart", follicular: "Follicular", fertile: "Fertile window", early: "Early luteal", late: "Late luteal" };
+
+function CycleStrip({ phaseKey, cycleDay, deep }) {
+  const lit = phaseKey === "approaching" ? "follicular" : phaseKey;
+  const accent = deep ? "#A371F7" : "#6CB6FF";
+  const day = deep && cycleDay > 0 ? Math.min(cycleDay, STRIP_TOTAL) : null;
+  const pos = day ? ((day - 0.5) / STRIP_TOTAL) * 100 : null;
+  const seg = day ? STRIP.find(s => day >= s.from && day <= s.to) : null;
+  const segIdx = seg ? STRIP.indexOf(seg) : -1;
+  const next = segIdx >= 0 ? STRIP[(segIdx + 1) % STRIP.length] : null;
+  const daysLeft = seg && seg.key !== "late" ? seg.to - cycleDay + 1 : null;
+  const jump = (i) => { const c = document.querySelectorAll(".sig .s-card")[i]; if (c) c.scrollIntoView({ behavior: "smooth", block: "center" }); };
+  return (
+    <div style={{ margin: "16px 0 4px" }}>
+      <div style={{ position: "relative", paddingTop: day ? 20 : 0 }}>
+        {day && (
+          <>
+            <div style={{ position: "absolute", top: 0, left: `calc(${pos}% - 30px)`, width: 60, textAlign: "center", fontFamily: "'DM Sans', sans-serif", fontSize: 11, fontWeight: 600, color: accent }}>day {cycleDay}</div>
+            <div style={{ position: "absolute", top: 15, left: `calc(${pos}% - 1px)`, width: 2, height: 40, background: accent, zIndex: 1, borderRadius: 1 }} />
+          </>
+        )}
+        <div style={{ display: "flex", gap: 3, height: 30 }}>
+          {STRIP.map((s, i) => {
+            const on = s.key === lit;
+            return (
+              <button key={s.key} onClick={() => jump(i)} aria-label={STRIP_NAMES[s.key]} style={{
+                flex: s.to - s.from + 1, border: on ? `1.5px solid ${accent}` : "1px solid #21262D", borderRadius: 6,
+                background: on ? accent + "33" : "#161B22", color: on ? "#E6EDF3" : "#565E68",
+                fontFamily: "'DM Sans', sans-serif", fontSize: 10, fontWeight: on ? 600 : 400, padding: 0, cursor: "pointer",
+                whiteSpace: "nowrap", overflow: "hidden",
+              }}>{s.label}</button>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ display: "flex", fontFamily: "'DM Sans', sans-serif", fontSize: 10, color: "#565E68", marginTop: 4 }}>
+        {STRIP.map(s => <span key={s.key} style={{ flex: s.to - s.from + 1, textAlign: "left" }}>{s.key === "late" ? "23+" : s.from}</span>)}
+      </div>
+      {day && next && daysLeft !== null && daysLeft > 0 && (
+        <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: "#8B949E", marginTop: 8 }}>About {daysLeft} {daysLeft === 1 ? "day" : "days"} until {STRIP_NAMES[next.key].toLowerCase()}</div>
+      )}
+      {!day && lit !== "unclear" && (
+        <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11, color: "#565E68", marginTop: 8 }}>Rules can't count days. A deep read adds a day marker.</div>
+      )}
+    </div>
+  );
+}
+
 function Signals({ entries, meds, date, setDate }) {
   const [showWhy, setShowWhy] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
@@ -816,7 +873,7 @@ function Signals({ entries, meds, date, setDate }) {
           <span className={"s-src" + (deep ? " deep" : "")}>{deep ? "✦ Deep read" : "Rules"}</span>
           <span className="s-badge" style={{ background: CONF[cur.conf] + "22", color: CONF[cur.conf], border: "1px solid " + CONF[cur.conf] + "66" }}>{cur.conf} confidence</span>
         </div>
-        {deep && deep.cycleDay > 0 && <div className="cday">Around cycle day {deep.cycleDay}</div>}
+        <CycleStrip phaseKey={cur.key} cycleDay={deep ? deep.cycleDay : 0} deep={!!deep} />
         {deep ? (
           <>
             <p className="why">{deep.reasoning}</p>
