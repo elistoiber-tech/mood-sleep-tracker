@@ -713,7 +713,7 @@ function CycleStrip({ phaseKey, cycleDay, deep }) {
         <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: "#8B949E", marginTop: 8 }}>About {daysLeft} {daysLeft === 1 ? "day" : "days"} until {STRIP_NAMES[next.key].toLowerCase()}</div>
       )}
       {!day && lit !== "unclear" && (
-        <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11, color: "#565E68", marginTop: 8 }}>Rules can't count days. A deep read adds a day marker.</div>
+        <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11, color: "#565E68", marginTop: 8 }}>{deep ? "Claude couldn't place a cycle day this time." : "Rules can't count days. A deep read adds a day marker."}</div>
       )}
     </div>
   );
