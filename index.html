@@ -159,18 +159,204 @@ function daysBetweenStr(a, b) {
 }
 
 // Phase estimate: evaluated top-down, first match wins.
-function estimatePhase({ mucus, breasts, skinF, released, breastsLegacy }) {
-  if (mucus === "eggwhite") return { phase: "Fertile window", key: "fertile", conf: "High" };
-  if (released) return { phase: "Cycle restart", key: "restart", conf: "High" };
-  if (breasts === "sore" && skinF) return { phase: "Late luteal", key: "late", conf: breastsLegacy ? "Medium" : "High" };
-  if (breasts === "full" && (mucus === "dry" || mucus === "sticky")) return { phase: "Early luteal", key: "early", conf: "Medium" };
-  if (mucus === "creamy" && breasts !== "sore") return { phase: "Approaching fertile", key: "approaching", conf: "Medium" };
-  if ((mucus === "dry" || mucus === "sticky") && !breasts && !skinF) return { phase: "Follicular", key: "follicular", conf: "Medium" };
-  return { phase: "Unclear", key: "unclear", conf: "Low" };
+// daysSinceEgg (optional): days since the last egg white BEFORE this day. Egg-white tiebreaker:
+// if it's been 1-10 days and the day would otherwise read follicular / approaching / unclear, lean early luteal.
+function estimatePhase({ mucus, breasts, skinF, released, breastsLegacy, daysSinceEgg }) {
+  let r;
+  if (mucus === "eggwhite") r = { phase: "Fertile window", key: "fertile", conf: "High", why: "🥚 Egg white today." };
+  else if (released) r = { phase: "Cycle restart", key: "restart", conf: "High", why: "Breast tenderness just dropped off (the release)." };
+  else if (breasts === "sore" && skinF) r = { phase: "Late luteal", key: "late", conf: breastsLegacy ? "Medium" : "High", why: "🍉 Sore breasts plus jawline or cystic skin." };
+  else if (breasts === "full" && (mucus === "dry" || mucus === "sticky")) r = { phase: "Early luteal", key: "early", conf: "Medium", why: "🍈🍈 Full breasts with dry or sticky mucus." };
+  else if (mucus === "creamy" && breasts !== "sore") r = { phase: "Approaching fertile", key: "approaching", conf: "Medium", why: "🥛 Creamy mucus, no sore breasts." };
+  else if ((mucus === "dry" || mucus === "sticky") && !breasts && !skinF) r = { phase: "Follicular", key: "follicular", conf: "Medium", why: "Dry or sticky mucus, no breast or skin signals." };
+  else r = { phase: "Unclear", key: "unclear", conf: "Low", why: "Not enough of the key signals logged this day." };
+  if (daysSinceEgg != null && daysSinceEgg >= 1 && daysSinceEgg <= 10 && ["follicular", "approaching", "unclear"].includes(r.key)) {
+    r = { phase: "Early luteal", key: "early", conf: "Medium", why: `${daysSinceEgg} ${daysSinceEgg === 1 ? "day" : "days"} since your last 🥚 egg white, so it leans early luteal (tiebreaker).` };
+  }
+  return r;
+}
+
+// Everything the rules need for one day, read from history as of that day (never peeks ahead).
+function signalsForDate(entries, d) {
+  const e = entries[d] || {};
+  const breasts = breastState(e);
+  const released = (() => {
+    if (breasts || !entries[d]) return false;
+    for (let b = 1; b <= 3; b++) { const p = shiftStr(d, -b); if (entries[p] && hasBreastTenderness(entries[p])) return true; }
+    return false;
+  })();
+  const keys = Object.keys(entries).filter(k => k <= d).sort();
+  const lastEggBefore = [...keys].reverse().find(k => k < d && entries[k].mucus === "eggwhite");
+  const lastEggAny = [...keys].reverse().find(k => entries[k].mucus === "eggwhite");
+  const isReleaseDay = (x) => {
+    if (!entries[x] || hasBreastTenderness(entries[x])) return false;
+    for (let b = 1; b <= 3; b++) { const p = shiftStr(x, -b); if (entries[p] && hasBreastTenderness(entries[p])) return true; }
+    return false;
+  };
+  const lastRelease = [...keys].reverse().find(isReleaseDay);
+  return {
+    entry: e,
+    logged: !!entries[d],
+    mucus: e.mucus || null,
+    breasts,
+    breastsLegacy: breastIsLegacy(e),
+    skinF: skinFlag(e),
+    released,
+    daysSinceEggBefore: lastEggBefore ? daysBetweenStr(lastEggBefore, d) : null,
+    daysSinceEgg: lastEggAny ? daysBetweenStr(lastEggAny, d) : null,
+    daysSinceRelease: lastRelease ? daysBetweenStr(lastRelease, d) : null,
+  };
+}
+
+function rulesForDate(entries, d) {
+  const s = signalsForDate(entries, d);
+  return estimatePhase({ mucus: s.mucus, breasts: s.breasts, skinF: s.skinF, released: s.released, breastsLegacy: s.breastsLegacy, daysSinceEgg: s.daysSinceEggBefore });
+}
+
+// Shared date bar for Log and Signals: arrows plus a "Back to today" button.
+function DateBar({ date, setDate }) {
+  const today = getToday();
+  const isToday = date === today;
+  const shift = (n) => { const nd = shiftStr(date, n); if (nd <= today) setDate(nd); };
+  const arrow = (dis) => ({
+    background: "#161B22", border: "none", color: dis ? "#21262D" : "#8B949E", fontSize: 18,
+    width: 40, height: 40, borderRadius: 8, cursor: dis ? "default" : "pointer",
+    display: "flex", alignItems: "center", justifyContent: "center",
+  });
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+      <button onClick={() => shift(-1)} style={arrow(false)} aria-label="Previous day">←</button>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontFamily: "'Newsreader', Georgia, serif", fontSize: 18, color: "#E6EDF3", fontWeight: 400 }}>{formatDate(date)}</div>
+        {isToday ? (
+          <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 10, color: "#2E9E6A", marginTop: 3 }}>today</div>
+        ) : (
+          <button onClick={() => setDate(today)} style={{ marginTop: 5, fontFamily: "'DM Sans', sans-serif", fontSize: 11, fontWeight: 600, color: "#6CB6FF", background: "#6CB6FF1A", border: "1px solid #6CB6FF55", borderRadius: 999, padding: "3px 12px", cursor: "pointer" }}>↩ Back to today</button>
+        )}
+      </div>
+      <button onClick={() => shift(1)} disabled={isToday} style={arrow(isToday)} aria-label="Next day">→</button>
+    </div>
+  );
+}
+
+// ---- Deep read (Claude API, called straight from this page) ----
+// The API key lives only in this phone's browser storage. It is never in this file, the repo, or a backup.
+const API_KEY_KEY = "cycle-tracker-anthropic-key";
+const DEEP_KEY = "cycle-tracker-deepreads";
+const DEEP_MODEL = "claude-haiku-5-5";
+const DEEP_PRICE = { in: 0.10, out: 0.50 }; // USD per million tokens, Haiku 5.5 (prompts under 100K)
+const PHASE_KEYS = { "Cycle restart": "restart", "Follicular": "follicular", "Approaching fertile": "approaching", "Fertile window": "fertile", "Early luteal": "early", "Late luteal": "late", "Unclear": "unclear" };
+
+function lsGet(k, fallback) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; } catch { return fallback; } }
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+function getApiKey() { try { return localStorage.getItem(API_KEY_KEY) || ""; } catch { return ""; } }
+
+// 90 days ending on the target day, relative day numbers only. No dates, no context notes.
+function buildDeepPayload(entries, meds, d) {
+  const days = [];
+  for (let n = 89; n >= 0; n--) {
+    const k = shiftStr(d, -n);
+    const e = entries[k];
+    if (!e) continue;
+    const row = { day: -n };
+    if (e.mood) row.mood = e.mood === "orange" ? "yellow" : e.mood;
+    if (e.sleep) row.sleep = e.sleep;
+    if (e.sleepTime) row.wokeAt = e.sleepTime;
+    if (e.bleed && e.bleed !== "none") row.bleed = e.bleed;
+    if (e.mucus) row.mucus = e.mucus;
+    const bs = breastState(e);
+    const body = (e.body || []).filter(t => !["boobs-full", "boobs-sore", "boobs-tender"].includes(t));
+    if (bs) body.push("breasts-" + bs);
+    if (body.length) row.body = body;
+    if ((e.skin || []).length) row.skin = e.skin;
+    days.push(row);
+  }
+  const medChanges = (meds || []).filter(m => m.date <= d && daysBetweenStr(m.date, d) <= 89)
+    .map(m => ({ day: -daysBetweenStr(m.date, d), change: m.note }));
+  return { days, medChanges };
+}
+
+const DEEP_SYSTEM = `You help one person estimate where she is in her menstrual cycle. She has a hormonal IUD, so bleeding is light, irregular, or absent and is a weak signal. Most people still ovulate on a hormonal IUD.
+
+You get up to 90 days of her daily log. Days are numbered relative to the day being assessed: day 0 is that day, day -1 the day before, and so on. Days she didn't log are missing.
+
+Signal strength, strongest first:
+1. Cervical mucus: dry, sticky, creamy, eggwhite. Egg white marks the fertile window; the last egg-white day is the best anchor. Ovulation is usually near it, and the luteal phase lasts roughly 12 to 16 days after.
+2. Breasts: breasts-full (early luteal, sometimes briefly near ovulation) and breasts-sore (late luteal peak). When tenderness drops off for a day after being present (the "release"), a new cycle is starting, bleed or no bleed.
+3. Skin: cystic and jawline acne cluster late luteal; oily skin shows early luteal.
+Weaker: energy (high-energy follicular and fertile; low-energy early luteal for 2-3 days and late luteal), snacky, bloated, cramping (luteal, especially late), mood, sleep. Spotting mid-cycle is noise on a hormonal IUD. Tretinoin and extractions are treatments, not signals.
+
+Phases she uses (typical cycle days): Cycle restart (1-5), Follicular (6-11), Approaching fertile (creamy mucus building toward egg white), Fertile window (12-16), Early luteal (17-22), Late luteal (23+). Use Unclear only when the history truly can't place her.
+
+Look for her own repeating patterns across cycles in the 90 days, not just textbook ones. Weigh the whole recent history; one thin day should not override a clear anchor. Med changes can shift mood and sleep, so discount those for a couple of weeks after one.
+
+A simple rule engine also made a guess from day 0 alone; it's given for comparison. Say whether you agree.
+
+Respond only by calling report_phase. Keep reasoning to 2-3 short, plain sentences that name the specific days or signals you relied on (e.g. "egg white on day -8"). No medical advice.`;
+
+const DEEP_TOOL = {
+  name: "report_phase",
+  description: "Report the estimated cycle phase for day 0.",
+  input_schema: {
+    type: "object",
+    properties: {
+      phase: { type: "string", enum: Object.keys(PHASE_KEYS) },
+      confidence: { type: "string", enum: ["High", "Medium", "Low"] },
+      cycle_day: { type: "integer", description: "Best guess of cycle day for day 0. Use 0 if it can't be estimated." },
+      reasoning: { type: "string", description: "2-3 short plain sentences naming the signals and relative days used." },
+      agrees_with_rules: { type: "boolean" },
+      watch_for: { type: "string", description: "One short line: the next signal that would confirm or change this estimate." },
+    },
+    required: ["phase", "confidence", "cycle_day", "reasoning", "agrees_with_rules", "watch_for"],
+  },
+};
+
+async function runDeepRead(entries, meds, d) {
+  const key = getApiKey();
+  if (!key) throw new Error("NO_KEY");
+  const rules = rulesForDate(entries, d);
+  const payload = buildDeepPayload(entries, meds, d);
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: DEEP_MODEL,
+      max_tokens: 700,
+      system: DEEP_SYSTEM,
+      tools: [DEEP_TOOL],
+      tool_choice: { type: "tool", name: "report_phase" },
+      messages: [{ role: "user", content: "Rule engine's guess for day 0: " + rules.phase + " (" + rules.conf + ").\n\nLog:\n" + JSON.stringify(payload) }],
+    }),
+  });
+  let data = null;
+  try { data = await res.json(); } catch {}
+  if (!res.ok) {
+    const msg = (data && data.error && data.error.message) || "";
+    if (res.status === 401) throw new Error("BAD_KEY");
+    if (/usage limits/i.test(msg) || /credit balance/i.test(msg)) throw new Error("CAP");
+    throw new Error("API " + res.status + (msg ? ": " + msg : ""));
+  }
+  const block = (data.content || []).find(c => c.type === "tool_use");
+  if (!block) throw new Error("No answer came back. Try again.");
+  const out = block.input;
+  return {
+    phase: out.phase, key: PHASE_KEYS[out.phase] || "unclear", conf: out.confidence,
+    cycleDay: out.cycle_day, reasoning: out.reasoning, agrees: out.agrees_with_rules, watchFor: out.watch_for,
+    rulesPhase: rules.phase, at: new Date().toISOString(), model: DEEP_MODEL,
+    inTok: (data.usage && data.usage.input_tokens) || 0, outTok: (data.usage && data.usage.output_tokens) || 0,
+    daysSent: payload.days.length,
+  };
 }
 
 function Dashboard({ entries, meds }) {
   const [sel, setSel] = useState(null);
+  const [mIdx, setMIdx] = useState(null); // which month the calendar shows; null = latest
+  const [showMore, setShowMore] = useState(false);
 
   const MOODC = { green: "#2E9E6A", yellow: "#E9C46A", red: "#C1121F" };
   const MOODL = { green: "Good", yellow: "Meh", red: "Bad" };
@@ -296,19 +482,29 @@ function Dashboard({ entries, meds }) {
         .dash .dmed-date { font-family: 'Newsreader', serif; font-size: 14px; color: #E6EDF3; flex: 0 0 auto; width: 84px; }
         .dash .dmed-note { font-family: 'DM Sans', sans-serif; font-size: 12.5px; color: #8B949E; line-height: 1.45; }
         .dash .depi-wrap { display: flex; flex-direction: column; gap: 8px; }
+        .dash .dmore { background: none; border: none; color: #6CB6FF; font-family: 'DM Sans', sans-serif; font-size: 12.5px; cursor: pointer; padding: 0; margin: 0 0 18px; }
+        .dash .dmsel { flex: 1; appearance: none; -webkit-appearance: none; background: #161B22 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238B949E'/%3E%3C/svg%3E") no-repeat right 12px center; border: 1px solid #21262D; border-radius: 8px; color: #E6EDF3; font-family: 'Newsreader', serif; font-size: 17px; padding: 6px 30px 6px 12px; height: 36px; text-align: center; text-align-last: center; }
       `}</style>
 
-      <div className="d-stats">
-        {[[total, "days logged"], [span, "day span"], [bleedDays, "bleed days"]].map(([n, l]) => (
-          <div className="d-stat" key={l}><div className="n">{n}</div><div className="l">{l}</div></div>
-        ))}
-      </div>
-
       <div className="d-sec">
-        <p className="d-lbl">Calendar</p>
-        <p className="d-note">Each day is tinted by mood. Red bar = bleeding, blue dot = mucus, purple square = medicine change.</p>
+        {(() => {
+          const idx = mIdx === null || mIdx >= months.length ? months.length - 1 : mIdx;
+          const go = (i) => { if (i >= 0 && i < months.length) { setMIdx(i); setSel(null); } };
+          const nav = (dis) => ({ background: "#161B22", border: "none", color: dis ? "#21262D" : "#8B949E", fontSize: 16, width: 36, height: 36, borderRadius: 8, cursor: dis ? "default" : "pointer", flex: "0 0 auto" });
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+              <button style={nav(idx === 0)} disabled={idx === 0} onClick={() => go(idx - 1)} aria-label="Previous month">‹</button>
+              <select className="dmsel" value={idx} onChange={ev => go(Number(ev.target.value))}>
+                {months.map(([y, m], i) => ({ y, m, i })).reverse().map(({ y, m, i }) => (
+                  <option key={i} value={i}>{new Date(y, m, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" })}</option>
+                ))}
+              </select>
+              <button style={nav(idx === months.length - 1)} disabled={idx === months.length - 1} onClick={() => go(idx + 1)} aria-label="Next month">›</button>
+            </div>
+          );
+        })()}
         <div className="dmonths">
-          {months.map(([y, m]) => {
+          {[months[mIdx === null || mIdx >= months.length ? months.length - 1 : mIdx]].map(([y, m]) => {
             const monthName = new Date(y, m, 1).toLocaleDateString("en-US", { month: "long", year: "numeric" });
             const firstDow = new Date(y, m, 1).getDay();
             const dim = new Date(y, m + 1, 0).getDate();
@@ -341,7 +537,6 @@ function Dashboard({ entries, meds }) {
             }
             return (
               <div key={y + "-" + m}>
-                <div className="dmonth">{monthName}</div>
                 <div className="ddow">{dow.map((x, i) => <span key={i}>{x}</span>)}</div>
                 <div className="dgrid">{cells}</div>
               </div>
@@ -380,6 +575,14 @@ function Dashboard({ entries, meds }) {
         ) : (
           <div className="ddetail muted">Tap any logged day to see the full entry.</div>
         )}
+      </div>
+
+      <button className="dmore" onClick={() => setShowMore(!showMore)}>{showMore ? "Hide patterns ▴" : "More patterns ▾"}</button>
+      {showMore && (<>
+      <div className="d-stats">
+        {[[total, "days logged"], [span, "day span"], [bleedDays, "bleed days"]].map(([n, l]) => (
+          <div className="d-stat" key={l}><div className="n">{n}</div><div className="l">{l}</div></div>
+        ))}
       </div>
 
       <div className="d-sec">
@@ -454,57 +657,77 @@ function Dashboard({ entries, meds }) {
           ))}
         </div>
       )}
+      </>)}
     </div>
   );
 }
 
-function Signals({ entries }) {
+function Signals({ entries, meds, date, setDate }) {
   const [showWhy, setShowWhy] = useState(false);
-  const today = getToday();
-  const todayE = entries[today] || {};
+  const [showSetup, setShowSetup] = useState(false);
+  const [reads, setReads] = useState(() => lsGet(DEEP_KEY, {}));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [hasKey, setHasKey] = useState(() => !!getApiKey());
+  const [keyInput, setKeyInput] = useState("");
 
-  // Picker, prefilled from today's entry so it's usually zero taps.
-  const [mucus, setMucus] = useState(todayE.mucus || null);
-  const [breasts, setBreasts] = useState(breastState(todayE));
-  const [jaw, setJaw] = useState(((todayE.skin) || []).includes("jawline"));
-  const [cyst, setCyst] = useState(((todayE.skin) || []).includes("cystic"));
+  useEffect(() => { setErr(""); }, [date]);
 
-  const skinF = jaw || cyst;
-  const released = (() => {
-    if (breasts) return false;
-    for (let b = 1; b <= 3; b++) {
-      const d = shiftStr(today, -b);
-      if (entries[d] && hasBreastTenderness(entries[d])) return true;
-    }
-    return false;
-  })();
-  const est = estimatePhase({ mucus, breasts, skinF, released, breastsLegacy: breastIsLegacy(todayE) });
-
-  const keys = Object.keys(entries).sort();
-  const lastEgg = [...keys].reverse().find(k => entries[k].mucus === "eggwhite");
-  const daysSinceEgg = lastEgg ? daysBetweenStr(lastEgg, today) : null;
-  const isReleaseDay = (d) => {
-    if (!entries[d] || hasBreastTenderness(entries[d])) return false;
-    for (let b = 1; b <= 3; b++) {
-      const p = shiftStr(d, -b);
-      if (entries[p] && hasBreastTenderness(entries[p])) return true;
-    }
-    return false;
-  };
-  const lastRelease = [...keys].reverse().find(isReleaseDay);
-  const daysSinceRelease = lastRelease ? daysBetweenStr(lastRelease, today) : null;
+  const s = signalsForDate(entries, date);
+  const rules = rulesForDate(entries, date);
+  const deep = reads[date] || null;
+  const cur = deep || rules;
 
   const CONF = { High: "#2E9E6A", Medium: "#E9C46A", Low: "#6E7681" };
-  const MUCUS_PICK = [
-    { value: "dry", emoji: "🏜️", label: "Dry" },
-    { value: "sticky", emoji: "🩹", label: "Sticky" },
-    { value: "creamy", emoji: "🥛", label: "Creamy" },
-    { value: "eggwhite", emoji: "🥚", label: "Egg white" },
-  ];
-  const BREAST_PICK = [
-    { value: "full", emoji: "🍈🍈", label: "Full" },
-    { value: "sore", emoji: "🍉", label: "Sore" },
-  ];
+
+  const ask = async () => {
+    if (!getApiKey()) { setShowSetup(true); setErr("Add your API key below first."); return; }
+    setBusy(true); setErr("");
+    try {
+      const r = await runDeepRead(entries, meds, date);
+      const next = { ...lsGet(DEEP_KEY, {}), [date]: r };
+      lsSet(DEEP_KEY, next);
+      setReads(next);
+    } catch (e) {
+      const m = e.message || String(e);
+      if (m === "NO_KEY") { setShowSetup(true); setErr("Add your API key below first."); }
+      else if (m === "BAD_KEY") setErr("That API key didn't work. Check it in Deep read setup below.");
+      else if (m === "CAP") setErr("Your monthly API limit or credit balance is used up. The rules estimate still works.");
+      else if (/Failed to fetch|NetworkError|Load failed/i.test(m)) setErr("Couldn't reach Claude. Check your connection and try again.");
+      else setErr(m);
+    }
+    setBusy(false);
+  };
+
+  const saveKey = () => {
+    const k = keyInput.trim();
+    if (!k) return;
+    try { localStorage.setItem(API_KEY_KEY, k); } catch {}
+    setKeyInput(""); setHasKey(true); setErr("");
+  };
+  const removeKey = () => {
+    if (!confirm("Remove the API key from this phone?")) return;
+    try { localStorage.removeItem(API_KEY_KEY); } catch {}
+    setHasKey(false);
+  };
+  const keyTail = (() => { const k = getApiKey(); return k ? k.slice(-4) : ""; })();
+
+  // Cost line: reads made this calendar month, from the token counts Anthropic sends back.
+  const ym = getToday().slice(0, 7);
+  const monthReads = Object.values(reads).filter(r => r && r.at && (() => { const t = new Date(r.at); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}` === ym; })());
+  const monthCost = monthReads.reduce((sum, r) => sum + (r.inTok || 0) * DEEP_PRICE.in / 1e6 + (r.outTok || 0) * DEEP_PRICE.out / 1e6, 0);
+  const fmtCost = (c) => c < 0.01 ? "under 1¢" : c < 1 ? `${(c * 100).toFixed(1)}¢` : `$${c.toFixed(2)}`;
+
+  // What you logged this day, in the Log's own emoji.
+  const e = s.entry;
+  const chips = [];
+  if (e.mucus) { const m = MUCUS_OPTIONS.find(o => o.value === e.mucus); chips.push(m ? m.emoji + " " + m.label : e.mucus); }
+  if (s.breasts) chips.push(s.breasts === "sore" ? "🍉 Sore" : "🍈🍈 Full");
+  (e.skin || []).forEach(t => { const o = SKIN_TAGS.find(x => x.value === t); if (o) chips.push(o.emoji + " " + o.label); });
+  (e.body || []).filter(t => !["boobs-full", "boobs-sore", "boobs-tender", "acne"].includes(t)).forEach(t => { const o = BODY_TAGS.find(x => x.value === t); if (o) chips.push(o.emoji + " " + o.label); });
+  if (e.bleed && e.bleed !== "none") { const o = BLEED_OPTIONS.find(x => x.value === e.bleed); if (o) chips.push(o.emoji + " " + o.label); }
+
+  const readTime = deep && deep.at ? new Date(deep.at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) + ", " + new Date(deep.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "";
 
   return (
     <div className="sig">
@@ -553,57 +776,88 @@ function Signals({ entries }) {
         .sig .s-foot { margin-top: 28px; padding-top: 18px; border-top: 1px dashed #21262D; }
         .sig .s-foot .s-lead { font-size: 12px; color: #7d8590; }
       `}</style>
+      <style>{`
+        .sig .s-hero { background: #12161C; border: 1px solid #21262D; border-radius: 16px; padding: 20px 18px 18px; text-align: center; }
+        .sig .s-hero.deep { border-color: #A371F766; background: linear-gradient(180deg, #A371F714, #12161C 60%); }
+        .sig .s-hero .cap { font-family: 'DM Sans', sans-serif; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: #565E68; }
+        .sig .s-hero .phase { font-family: 'Newsreader', serif; font-size: 30px; color: #E6EDF3; margin: 6px 0 10px; line-height: 1.1; }
+        .sig .s-badges { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; }
+        .sig .s-src { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 12px; border-radius: 999px; background: #21262D; color: #8B949E; border: 1px solid #30363D; }
+        .sig .s-src.deep { background: #A371F722; color: #C9A7FF; border-color: #A371F766; }
+        .sig .s-hero .cday { font-family: 'DM Sans', sans-serif; font-size: 12px; color: #8B949E; margin-top: 10px; }
+        .sig .s-hero .why { font-family: 'DM Sans', sans-serif; font-size: 13px; color: #C9D1D9; line-height: 1.6; margin: 12px 0 0; text-align: left; }
+        .sig .s-hero .watch { font-family: 'DM Sans', sans-serif; font-size: 12px; color: #8B949E; line-height: 1.5; margin: 8px 0 0; text-align: left; }
+        .sig .s-hero .watch b { color: #C9D1D9; font-weight: 600; }
+        .sig .s-hero .cmp { font-family: 'DM Sans', sans-serif; font-size: 11.5px; color: #8B949E; margin: 12px 0 0; padding-top: 10px; border-top: 1px dashed #21262D; text-align: left; }
+        .sig .s-hero .cmp .ok { color: #2E9E6A; } .sig .s-hero .cmp .no { color: #F4A261; }
+        .sig .s-ask { margin-top: 14px; width: 100%; font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 600; padding: 12px; border-radius: 12px; border: 1px solid #A371F7; background: #A371F733; color: #E6EDF3; cursor: pointer; }
+        .sig .s-ask.secondary { background: transparent; border-color: #30363D; color: #8B949E; font-size: 12px; font-weight: 500; padding: 8px; }
+        .sig .s-ask:disabled { opacity: 0.6; cursor: default; }
+        .sig .s-err { font-family: 'DM Sans', sans-serif; font-size: 12px; color: #F47067; margin: 10px 0 0; text-align: left; }
+        .sig .s-meta { font-family: 'DM Sans', sans-serif; font-size: 10.5px; color: #565E68; margin-top: 8px; }
+        .sig .s-logged { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .sig .s-tag { font-family: 'DM Sans', sans-serif; font-size: 11.5px; color: #C9D1D9; background: #161B22; border: 1px solid #21262D; border-radius: 999px; padding: 4px 10px; }
+        .sig .s-toggle { background: none; border: none; color: #6CB6FF; font-family: 'DM Sans', sans-serif; font-size: 12.5px; cursor: pointer; padding: 0; margin: 24px 0 0; }
+        .sig .s-whatif { background: #12161C; border: 1px solid #21262D; border-radius: 12px; padding: 4px 14px 14px; margin-top: 10px; }
+        .sig .s-wi-out { font-family: 'DM Sans', sans-serif; font-size: 13px; color: #C9D1D9; margin-top: 14px; }
+        .sig .s-wi-out b { color: #E6EDF3; }
+        .sig .s-setup { background: #12161C; border: 1px solid #21262D; border-radius: 12px; padding: 14px; margin-top: 10px; font-family: 'DM Sans', sans-serif; font-size: 12px; color: #8B949E; line-height: 1.6; }
+        .sig .s-setup input { width: 100%; box-sizing: border-box; margin: 8px 0; padding: 9px 12px; background: #161B22; border: 1px solid #30363D; border-radius: 8px; color: #E6EDF3; font-family: 'DM Sans', sans-serif; font-size: 13px; outline: none; }
+        .sig .s-setup .row { display: flex; gap: 8px; align-items: center; }
+        .sig .s-btn { font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 600; padding: 7px 14px; border-radius: 8px; border: 1px solid #30363D; background: #161B22; color: #C9D1D9; cursor: pointer; }
+      `}</style>
+
+      <DateBar date={date} setDate={setDate} />
+
+      <div className={"s-hero" + (deep ? " deep" : "")}>
+        <div className="cap">{date === getToday() ? "Where you are today" : "Where you were this day"}</div>
+        <div className="phase">{cur.phase}</div>
+        <div className="s-badges">
+          <span className={"s-src" + (deep ? " deep" : "")}>{deep ? "✦ Deep read" : "Rules"}</span>
+          <span className="s-badge" style={{ background: CONF[cur.conf] + "22", color: CONF[cur.conf], border: "1px solid " + CONF[cur.conf] + "66" }}>{cur.conf} confidence</span>
+        </div>
+        {deep && deep.cycleDay > 0 && <div className="cday">Around cycle day {deep.cycleDay}</div>}
+        {deep ? (
+          <>
+            <p className="why">{deep.reasoning}</p>
+            {deep.watchFor && <p className="watch"><b>Watch for:</b> {deep.watchFor}</p>}
+            <p className="cmp">Rules said <b>{rules.phase}</b>: {deep.phase === rules.phase ? <span className="ok">same read</span> : <span className="no">Claude reads it differently</span>}</p>
+            <div className="s-meta">Read {readTime} · {deep.daysSent} logged days from the last 90</div>
+          </>
+        ) : (
+          <p className="why">{s.logged ? rules.why : "Nothing logged this day yet."}</p>
+        )}
+        <button className={"s-ask" + (deep ? " secondary" : "")} onClick={ask} disabled={busy}>
+          {busy ? "Reading your last 90 days…" : deep ? "Redo deep read" : "✦ Deep read this day"}
+        </button>
+        {err && <p className="s-err">{err}</p>}
+      </div>
 
       <div className="s-stats">
         <div className="s-stat">
-          <div className="n">{daysSinceEgg === null ? "—" : daysSinceEgg} {daysSinceEgg !== null && <small>{daysSinceEgg === 1 ? "day" : "days"}</small>}</div>
+          <div className="n">{s.daysSinceEgg === null ? "—" : s.daysSinceEgg} {s.daysSinceEgg !== null && <small>{s.daysSinceEgg === 1 ? "day" : "days"}</small>}</div>
           <div className="l">since last 🥚 egg white</div>
         </div>
         <div className="s-stat">
-          <div className="n">{daysSinceRelease === null ? "—" : daysSinceRelease} {daysSinceRelease !== null && <small>{daysSinceRelease === 1 ? "day" : "days"}</small>}</div>
+          <div className="n">{s.daysSinceRelease === null ? "—" : s.daysSinceRelease} {s.daysSinceRelease !== null && <small>{s.daysSinceRelease === 1 ? "day" : "days"}</small>}</div>
           <div className="l">since last tenderness release</div>
         </div>
       </div>
 
-      <p className="s-sec-lbl">Where am I now</p>
-      <p className="s-sec-note">Prefilled from today's log. Change anything to test a "what if."</p>
+      <p className="s-sec-lbl">Logged this day</p>
+      {chips.length ? (
+        <div className="s-logged">{chips.map((c, i) => <span className="s-tag" key={i}>{c}</span>)}</div>
+      ) : (
+        <p className="s-sec-note">No signals logged.</p>
+      )}
 
-      <div className="s-pick-lbl">Mucus</div>
-      <div className="s-chips">
-        {MUCUS_PICK.map(o => (
-          <button key={o.value} className={"s-chip mucus" + (mucus === o.value ? " on" : "")} onClick={() => setMucus(mucus === o.value ? null : o.value)}>
-            <span className="e">{o.emoji}</span>{o.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="s-pick-lbl">Breasts</div>
-      <div className="s-chips">
-        {BREAST_PICK.map(o => (
-          <button key={o.value} className={"s-chip breast" + (breasts === o.value ? " on" : "")} onClick={() => setBreasts(breasts === o.value ? null : o.value)}>
-            <span className="e">{o.emoji}</span>{o.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="s-pick-lbl">Skin</div>
-      <div className="s-chips">
-        <button className={"s-chip skin" + (jaw ? " on" : "")} onClick={() => setJaw(!jaw)}><span className="e">📍</span>Jawline/chin</button>
-        <button className={"s-chip skin" + (cyst ? " on" : "")} onClick={() => setCyst(!cyst)}><span className="e">🔥</span>Cystic</button>
-      </div>
-
-      <div className="s-est">
-        <div className="cap">Best estimate right now</div>
-        <div className="phase">{est.phase}</div>
-        <span className="s-badge" style={{ background: CONF[est.conf] + "22", color: CONF[est.conf], border: "1px solid " + CONF[est.conf] + "66" }}>{est.conf} confidence</span>
-      </div>
 
       <p className="s-sec-lbl" style={{ marginTop: 30 }}>The five phases</p>
       <p className="s-sec-note">Built from the same words and emoji as your Log. A bolded line is that phase's standout signal.</p>
       <div className="s-cards">
 
-        <div className={"s-card" + (est.key === "restart" ? " matched" : "")}>
-          <div className="s-card-h"><span className="nm">Cycle restart{est.key === "restart" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 1–5</span></div>
+        <div className={"s-card" + (cur.key === "restart" ? " matched" : "")}>
+          <div className="s-card-h"><span className="nm">Cycle restart{cur.key === "restart" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 1–5</span></div>
           <div className="s-line">🔴 Spotting or Light, or nothing at all</div>
           <div className="s-line">🏜️ Dry</div>
           <div className="s-line">🔋 Low energy day 1–2, then off</div>
@@ -611,32 +865,32 @@ function Signals({ entries }) {
           <span className="s-ital">Boobs tender drops off. That release is your anchor, bleed or no bleed.</span>
         </div>
 
-        <div className={"s-card" + (est.key === "follicular" ? " matched" : "")}>
-          <div className="s-card-h"><span className="nm">Follicular{est.key === "follicular" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 6–11</span></div>
+        <div className={"s-card" + (cur.key === "follicular" ? " matched" : "")}>
+          <div className="s-card-h"><span className="nm">Follicular{cur.key === "follicular" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 6–11</span></div>
           <div className="s-line">🏜️ Dry → 🩹 Sticky</div>
           <div className="s-line">⚡ High energy · 🦴 Lean</div>
           <div className="s-line s-quiet">Skin quiet</div>
           <span className="s-ital">Best window for hard lifts. Appetite lowest, so 🧁 Snacky rarely fires here.</span>
         </div>
 
-        <div className={"s-card key" + (est.key === "fertile" ? " matched" : "")}>
-          <div className="s-card-h"><span className="nm">Fertile window<span className="s-key-tag">key</span>{est.key === "fertile" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 12–16</span></div>
+        <div className={"s-card key" + (cur.key === "fertile" ? " matched" : "")}>
+          <div className="s-card-h"><span className="nm">Fertile window<span className="s-key-tag">key</span>{cur.key === "fertile" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 12–16</span></div>
           <div className="s-line"><b>🥚 Egg white</b> (the one to watch for)</div>
           <div className="s-line">⚡ High energy</div>
           <div className="s-line">🍈🍈 Boobs full, brief 1–2 days for some people</div>
           <span className="s-ital">Last 🥚 day is your marker. Count forward about 12–16 days.</span>
         </div>
 
-        <div className={"s-card" + (est.key === "early" ? " matched" : "")}>
-          <div className="s-card-h"><span className="nm">Early luteal{est.key === "early" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 17–22</span></div>
+        <div className={"s-card" + (cur.key === "early" ? " matched" : "")}>
+          <div className="s-card-h"><span className="nm">Early luteal{cur.key === "early" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 17–22</span></div>
           <div className="s-line">🥚 stops → 🏜️ Dry or 🩹 Sticky within a day or two</div>
           <div className="s-line"><b>🍈🍈 Boobs full</b> · 🧁 Snacky · 🫧 Bloated · 💧 Oily</div>
           <div className="s-line">🔋 Low energy for 2–3 days, then rebounds</div>
           <span className="s-ital">Deep ones forming under the surface before they show.</span>
         </div>
 
-        <div className={"s-card" + (est.key === "late" ? " matched" : "")}>
-          <div className="s-card-h"><span className="nm">Late luteal{est.key === "late" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 23+</span></div>
+        <div className={"s-card" + (cur.key === "late" ? " matched" : "")}>
+          <div className="s-card-h"><span className="nm">Late luteal{cur.key === "late" && <span className="s-mine">you're likely here</span>}</span><span className="rg">day 23+</span></div>
           <div className="s-line">🩹 Sticky or 🥛 Creamy</div>
           <div className="s-line"><b>🍉 Boobs sore</b> at peak · 🧁 Snacky · 🫧 Bloated · 🔋 Low energy · 🤏 Cramping</div>
           <div className="s-line">🔥 Cystic · 📍 Jawline/chin</div>
@@ -644,6 +898,7 @@ function Signals({ entries }) {
         </div>
 
       </div>
+
 
       <div className="s-foot">
         <p className="s-lead"><b>Phase estimates, not facts.</b> A hormonal IUD thins the lining, so bleeding gets light, irregular, or stops. That's the IUD acting locally, not your cycle stopping. Mucus, breast tenderness, and skin are what actually place you.</p>
@@ -653,6 +908,26 @@ function Signals({ entries }) {
             <p>Most people keep ovulating on a hormonal IUD, so bleed dates are unreliable here. Mucus, breast tenderness, and skin are the signals that place you.</p>
             <p><b>Mood, sleep, and appetite are lower-confidence inputs.</b> Mucus, breast tenderness, and skin are the cleaner three.</p>
             <p>Mid-cycle spotting is <b>not</b> an ovulation signal for you. It's common on a hormonal IUD for unrelated reasons, so it's noise here.</p>
+            <p><b>Rules</b> read only the day you're on, plus one tiebreaker: within 10 days after an egg white, they lean early luteal. <b>Deep read</b> sends Claude your last 90 days (no dates, no context notes) and only runs when you tap.</p>
+          </div>
+        )}
+
+        <button className="s-why" style={{ marginTop: 14, display: "block" }} onClick={() => setShowSetup(!showSetup)}>{showSetup ? "Hide deep read setup ▴" : "Deep read setup ▾"}</button>
+        {showSetup && (
+          <div className="s-setup">
+            {hasKey ? (
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <span>API key saved on this phone (ends {keyTail})</span>
+                <button className="s-btn" onClick={removeKey}>Remove</button>
+              </div>
+            ) : (
+              <>
+                <div>Paste your <b style={{ color: "#C9D1D9" }}>cycle-check</b> API key. It stays only on this phone: not in the app's code, not in backups.</div>
+                <input type="password" autoComplete="off" placeholder="sk-ant-…" value={keyInput} onChange={ev => setKeyInput(ev.target.value)} />
+                <button className="s-btn" onClick={saveKey}>Save key</button>
+              </>
+            )}
+            <div style={{ marginTop: 12 }}>This month: <b style={{ color: "#C9D1D9" }}>{monthReads.length} {monthReads.length === 1 ? "read" : "reads"}</b>, about <b style={{ color: "#C9D1D9" }}>{fmtCost(monthCost)}</b> on Haiku.</div>
           </div>
         )}
       </div>
@@ -849,6 +1124,7 @@ function CycleTracker() {
       exportedAt: new Date().toISOString(),
       entries,
       meds,
+      deepReads: lsGet(DEEP_KEY, {}),
     }, null, 2);
   };
 
@@ -1007,6 +1283,9 @@ function CycleTracker() {
             medCount = toAdd.length;
           }
         }
+        if (data.deepReads && typeof data.deepReads === "object") {
+          lsSet(DEEP_KEY, { ...data.deepReads, ...lsGet(DEEP_KEY, {}) });
+        }
         const entryCount = data.entries ? Object.keys(data.entries).length : 0;
         if (entryCount > 0) saveEntries(newEntries);
         return { count: entryCount, medCount };
@@ -1092,7 +1371,7 @@ function CycleTracker() {
       <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
 
       <div style={{
-        padding: "20px 20px 16px",
+        padding: "calc(env(safe-area-inset-top, 0px) + 14px) 20px 14px",
         borderBottom: "1px solid #161B22",
         position: "sticky",
         top: 0,
@@ -1130,24 +1409,25 @@ function CycleTracker() {
           </div>
         </div>
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 2, marginTop: 12 }}>
+        <div style={{ display: "flex", flexWrap: "nowrap", justifyContent: "space-between", gap: 0, marginTop: 12, marginLeft: -7, marginRight: -7 }}>
           {[
             { key: "log", label: "Log" },
-            { key: "dashboard", label: "Dashboard" },
             { key: "signals", label: "Signals" },
-            { key: "history", label: "History" },
+            { key: "dashboard", label: "Dashboard" },
             { key: "meds", label: "Meds" },
+            { key: "history", label: "History" },
             { key: "export", label: "Share" },
           ].map(tab => (
             <button
               key={tab.key}
-              onClick={() => setView(tab.key)}
+              onClick={() => { setView(tab.key); window.scrollTo(0, 0); }}
               style={{
                 fontFamily: "'DM Sans', sans-serif",
                 fontSize: 12,
                 fontWeight: view === tab.key ? 600 : 400,
-                padding: "5px 14px",
+                padding: "6px 7px",
                 borderRadius: 6,
+                whiteSpace: "nowrap",
                 border: "none",
                 cursor: "pointer",
                 background: view === tab.key ? "#161B22" : "transparent",
@@ -1162,61 +1442,7 @@ function CycleTracker() {
 
       {view === "log" && (
         <div style={{ padding: "16px 20px" }}>
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: 24,
-          }}>
-            <button onClick={() => shiftDate(-1)} style={{
-              background: "#161B22",
-              border: "none",
-              color: "#8B949E",
-              fontSize: 18,
-              width: 40,
-              height: 40,
-              borderRadius: 8,
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}>←</button>
-            <div style={{ textAlign: "center" }}>
-              <div style={{
-                fontFamily: "'Newsreader', Georgia, serif",
-                fontSize: 18,
-                color: "#E6EDF3",
-                fontWeight: 400,
-              }}>
-                {formatDate(currentDate)}
-              </div>
-              {isToday && (
-                <div style={{
-                  fontFamily: "'DM Sans', sans-serif",
-                  fontSize: 10,
-                  color: "#2D6A4F",
-                  marginTop: 2,
-                }}>today</div>
-              )}
-            </div>
-            <button
-              onClick={() => shiftDate(1)}
-              disabled={isToday}
-              style={{
-                background: "#161B22",
-                border: "none",
-                color: isToday ? "#21262D" : "#8B949E",
-                fontSize: 18,
-                width: 40,
-                height: 40,
-                borderRadius: 8,
-                cursor: isToday ? "default" : "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >→</button>
-          </div>
+          <DateBar date={currentDate} setDate={setCurrentDate} />
 
           <div style={{ marginBottom: 20 }}>
             <div style={{
@@ -1631,7 +1857,7 @@ function CycleTracker() {
 
       {view === "dashboard" && <Dashboard entries={entries} meds={meds} />}
 
-      {view === "signals" && <Signals entries={entries} />}
+      {view === "signals" && <Signals entries={entries} meds={meds} date={currentDate} setDate={setCurrentDate} />}
 
       {view === "meds" && (
         <div style={{ padding: "16px 20px" }}>
